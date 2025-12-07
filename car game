@@ -2,702 +2,2761 @@
 
 jmp start
 
-; ==========================================================
-; --- Data Section ---
-; ==========================================================
+; ============================================
+; DATA SECTION
+; ============================================
 
-player_row:     db 20
-player_col:     db 38
-prev_player_row: db 20
-prev_player_col: db 38
+; Screen dimensions
+SCREEN_WIDTH    equ 80
+SCREEN_HEIGHT   equ 25
 
-LANE_LEFT       equ 26
-LANE_MIDDLE     equ 38
+; Road boundaries (columns)
+ROAD_LEFT       equ 25          ; Left edge of road
+ROAD_RIGHT      equ 55          ; Right edge of road (exclusive)
+ROAD_WIDTH      equ 30          ; Width of road (30 columns)
+
+; Lane markings positions (2 lines for 3 lanes)
+; Road is 30 columns: 25-54
+; Lane 1: 25-34 (10 cols), Lane 2: 35-44 (10 cols), Lane 3: 45-54 (10 cols)
+LANE_MARK_1     equ 35          ; First lane marking
+LANE_MARK_2     equ 45          ; Second lane marking
+
+; Colors (background * 16 + foreground)
+GRASS_COLOR     equ 0x22        ; Green background, green foreground
+ROAD_COLOR      equ 0x77        ; Gray background, gray foreground
+LANE_COLOR      equ 0x7F        ; Gray background, white foreground
+CAR_COLOR       equ 0x0C        ; Black background, red foreground
+OBSTACLE_COLOR  equ 0x0B        ; Black background, cyan foreground
+COIN_COLOR      equ 0x7E        ; Gray background, bright yellow foreground
+FUEL_COLOR      equ 0x0A        ; Black background, light green foreground
+PROMPT_COLOR    equ 0x0F        ; Plain white on black (prompt text)
+BAR_COLOR       equ 0x07        ; Plain white on black strip
+SPARK_COLOR     equ 0x0E        ; Black background, bright yellow foreground (sparks)
+FUEL_BAR_GREEN  equ 0x0A        ; Black background, light green foreground (fuel bar)
+SCORE_TEXT_COLOR equ 0x00       ; Black text on black background (invisible) - will use white
+SCORE_TEXT_COLOR_FIX equ 0x0F   ; White on black for score text
+
+; Style colors for screens
+TITLE_COLOR     equ 0x0E        ; Yellow on black (titles)
+HEADER_COLOR    equ 0x0B        ; Cyan on black (headers)
+BORDER_COLOR    equ 0x09        ; Blue on black (borders)
+HIGHLIGHT_COLOR equ 0x0C        ; Light red on black (highlights)
+INFO_COLOR      equ 0x0A        ; Light green on black (info text)
+
+; Prompt placement (rough center of 80x25)
+START_ROW       equ 12
+START_COL       equ 24
+CONFIRM_ROW     equ 12
+CONFIRM_COL     equ 24
+CONFIRM_BAR_WIDTH equ 44
+CONFIRM_BAR_COL   equ 18
+
+; Lane centers and game states
+LANE_LEFT       equ 30
+LANE_CENTER     equ 40
 LANE_RIGHT      equ 50
 
-obs_count:      db 0
-obs_rows:       db 0, 0, 0
-obs_cols:       db 0, 0, 0
+STATE_WAIT          equ 0
+STATE_INTRO         equ 1
+STATE_INPUT         equ 2
+STATE_INSTRUCTIONS  equ 3
+STATE_RUN            equ 4
+STATE_CONFIRM        equ 5
+STATE_END            equ 6
 
-coin_count:     db 0
-coin_rows:      db 0, 0, 0
-coin_cols:      db 0, 0, 0
+; Player car position (bottom center of road, middle lane center)
+; Road is columns 25-54, middle lane center is at column 40
+player_x        dw LANE_CENTER  ; X position (column) - center of middle lane
+player_y        dw 22           ; Y position (row) - near bottom
 
-fuel_count:     db 0
-fuel_rows:      db 0, 0
-fuel_cols:      db 0, 0
+; Obstacle car position
+obstacle_x      dw LANE_CENTER  ; Will be randomized to 30, 40, or 50 (lane centers)
+obstacle_y      dw 5            ; Near top of screen
 
-frame_counter:  dw 0
-spawn_interval: dw 30      ; Time constant: obstacles spawn every 30 frames
-update_counter: dw 0
-random_seed:    db 7
+; Coin position
+coin_x          dw 40
+coin_y          dw 10
 
-game_started:   db 0
-game_paused:    db 0
-game_animating: db 0
-in_quit_dialog: db 0
-game_over:      db 0
-lane_change_cooldown: dw 0    ; Cooldown timer for lane changes
-old_kb_isr:     dd 0
+; Fuel position
+fuel_x          dw 40
+fuel_y          dw 14
 
-player_score:   dw 0
-fuel_level:     db 100        ; Fuel level (0-100)
-fuel_timer:     dw 0          ; Timer for fuel decrease
-player_name:    times 20 db 0
-player_roll:    times 15 db 0
+; Active flags (0 = inactive, 1 = active)
+obstacle_active dw 0
+coin_active     dw 0
+fuel_active     dw 0
 
-; Keyboard buffer
-kb_scan:        db 0
-kb_char:        db 0
-kb_flag:        db 0
+; Spawn timing counters (frames) - tuned for visibility
+OBSTACLE_SPAWN_TICKS equ 15     ; obstacle appears faster
+COIN_SPAWN_TICKS     equ 15     ; coin matches obstacle spawn speed
+FUEL_SPAWN_TICKS     equ 30     ; fuel appears slower
 
-; Messages
-msg_intro1:     db 'HIGHWAY RACER', 0
-msg_intro2:     db 'Developer: Your Name', 0
-msg_intro3:     db 'Roll No: 22L-XXXX', 0
-msg_intro4:     db 'Press SPACE to continue', 0
+obstacle_counter dw 0
+coin_counter     dw COIN_SPAWN_TICKS   ; start high so a coin spawns immediately
+fuel_counter     dw 0
 
-msg_name:       db 'Enter your name: ', 0
-msg_roll:       db 'Enter roll number: ', 0
+; Movement cooldown (prevents rapid lane switching)
+MOVEMENT_COOLDOWN equ 5                ; Frames to wait between movements
+movement_cooldown  dw 0                ; Current cooldown counter
 
-msg_inst1:      db 'INSTRUCTIONS', 0
-msg_inst2:      db 'Arrow Keys - Move car', 0
-msg_inst3:      db 'Coins - Increase score', 0
-msg_inst4:      db 'Fuel - Keep tank full', 0
-msg_inst5:      db 'ESC - Pause/Quit', 0
-msg_inst6:      db 'Press SPACE to continue', 0
+; Fuel system
+MAX_FUEL          equ 100              ; Maximum fuel level (100%)
+FUEL_DEPLETE_TICKS equ 30              ; Frames between fuel depletion (every 30 frames)
+FUEL_REFILL_AMOUNT equ 20              ; Fuel refill amount (1/5th of MAX_FUEL = 20%)
 
-msg_main:       db 'Press SPACE to start game', 0
-msg_quit:       db 'Do you want to quit?', 0
-msg_quit_y:     db 'Y - Yes', 0
-msg_quit_n:     db 'N - No', 0
+fuel_level        dw MAX_FUEL          ; Current fuel level (0-100)
+fuel_deplete_counter dw 0             ; Counter for fuel depletion timer
 
-msg_end1:       db 'GAME OVER', 0
-msg_end2:       db 'Name: ', 0
-msg_end3:       db 'Roll: ', 0
-msg_end4:       db 'Score: ', 0
-msg_end5:       db 'SPACE-Main Menu ESC-Quit', 0
+; Random seed for better lane distribution
+random_seed       dw 0                 ; Seed for random number generation
 
-; ==========================================================
-; --- Software Interrupt Handler for Quit Dialog ---
-; ==========================================================
-quit_dialog_isr:
-    pusha
-    push es
-    call show_quit_dialog
-    pop es
-    popa
-    iret
+; Collision flag
+collision_occurred dw 0                ; 1 if collision detected, 0 otherwise
 
-; ==========================================================
-; --- Keyboard ISR ---
-; ==========================================================
-keyboard_isr:
+; Game state
+game_state      dw STATE_INTRO
+confirm_shown   dw 0
+end_cause       dw 0           ; 0=quit, 1=fuel, 2=crash
+confirm_from_end dw 0          ; 1 if confirm screen came from ending screen
+confirm_from_pregame dw 0      ; 1 if confirm screen came from intro/input/instructions
+
+; Player data
+player_name     times 20 db 0  ; Player name (max 19 chars + null)
+player_roll     times 15 db 0  ; Roll number (max 14 chars + null)
+coins_collected dw 0           ; Score (coins collected)
+score_buffer    times 10 db 0  ; Buffer for score string conversion
+score_label     db 'Score: ',0
+fuel_label      db 'Fuel: ',0
+
+; ============================================
+; MUSIC SYSTEM (Multitasking via Timer Interrupt)
+; ============================================
+; IMPORTANT: MP3 files CANNOT be used in 16-bit DOS assembly
+; Music must be defined as note frequencies and durations
+;
+; HOW TO CREATE YOUR OWN MUSIC:
+; 1. Modify the music_data array below
+; 2. Each entry is: dw frequency, duration
+; 3. Use the frequency table below to find note frequencies
+; 4. Duration: 10 ticks = ~0.55 seconds, 20 ticks = ~1.1 seconds
+; 5. Use frequency 0 for silence/rests
+; 6. End with: dw MUSIC_END, 0
+;
+; MUSICAL NOTE FREQUENCIES (Hz):
+; Octave 3: C3=131, D3=147, E3=165, F3=175, G3=196, A3=220, B3=247
+; Octave 4: C4=262, D4=294, E4=330, F4=349, G4=392, A4=440, B4=494
+; Octave 5: C5=523, D5=587, E5=659, F5=698, G5=784, A5=880, B5=988
+; Octave 6: C6=1047, D6=1175, E6=1319, F6=1397, G6=1568, A6=1760, B6=1976
+;
+; COMMON MELODIES (you can look up frequencies online):
+; - Happy Birthday: C4 C4 D4 C4 F4 E4, C4 C4 D4 C4 G4 F4, etc.
+; - Twinkle Twinkle: C4 C4 G4 G4 A4 A4 G4, F4 F4 E4 E4 D4 D4 C4
+; - Create your own by experimenting with different frequencies!
+;
+; Format: frequency (word), duration in ticks (word)
+; Duration: 1 tick = ~55ms (18.2 ticks/sec), so 10 ticks = ~0.55 seconds
+; 0xFFFF = end marker (rest notes use frequency 0)
+
+MUSIC_END       equ 0xFFFF       ; End marker
+
+; Music data - Energetic Racing Game Theme!
+; Fast-paced, exciting melody perfect for a car racing game
+music_data:
+    ; Opening - fast ascending (like revving engine)
+    dw 330, 8       ; E4
+    dw 392, 8       ; G4
+    dw 440, 8       ; A4
+    dw 523, 12      ; C5
+    
+    ; Main theme - energetic rhythm
+    dw 523, 8       ; C5
+    dw 494, 8       ; B4
+    dw 440, 8       ; A4
+    dw 392, 8       ; G4
+    dw 440, 8       ; A4
+    dw 494, 8       ; B4
+    dw 523, 16      ; C5 (accent)
+    
+    ; Fast descending pattern
+    dw 523, 6       ; C5
+    dw 494, 6       ; B4
+    dw 440, 6       ; A4
+    dw 392, 6       ; G4
+    dw 330, 6       ; E4
+    dw 294, 6       ; D4
+    
+    ; Build-up section
+    dw 330, 8       ; E4
+    dw 349, 8       ; F4
+    dw 392, 8       ; G4
+    dw 440, 8       ; A4
+    dw 494, 8       ; B4
+    dw 523, 12      ; C5
+    
+    ; High energy section
+    dw 523, 8       ; C5
+    dw 587, 8       ; D5
+    dw 659, 8       ; E5
+    dw 523, 8       ; C5
+    dw 587, 8       ; D5
+    dw 659, 16      ; E5 (peak)
+    
+    ; Rhythmic pattern
+    dw 523, 6       ; C5
+    dw 0, 4         ; Rest
+    dw 523, 6       ; C5
+    dw 0, 4         ; Rest
+    dw 494, 6       ; B4
+    dw 440, 6       ; A4
+    dw 392, 12      ; G4
+    
+    ; Closing - fast run
+    dw 440, 6       ; A4
+    dw 494, 6       ; B4
+    dw 523, 6       ; C5
+    dw 587, 6       ; D5
+    dw 659, 12      ; E5
+    dw 0, 8         ; Rest before loop
+    dw MUSIC_END, 0 ; End marker (loops back to start)
+
+; Music/Timer interrupt data
+old_timer_off   dw 0
+old_timer_seg   dw 0
+old_timer_ptr   dd 0            ; Far pointer to original handler (for reliable jumping)
+music_enabled   dw 1            ; 1 = music on, 0 = music off
+music_note_index dw 0           ; Current position in music data
+music_note_counter dw 0         ; Counter for current note duration
+
+start_msg       db 'Press any key to start',0
+confirm_msg     db 'Do you want to exit? (y/n)',0
+
+; Intro screen messages
+msg_intro1      db 'HIGHWAY DASH',0
+msg_intro2      db 'Developed By:',0
+msg_intro3      db 'Rayan Javed',0
+msg_intro4      db 'Roll No: 0892',0
+msg_intro5      db 'Press any key to continue...',0
+
+; Input screen messages
+msg_input1      db 'ENTER YOUR DETAILS',0
+msg_input_name  db 'Enter your name: ',0
+msg_input_roll  db 'Enter your roll number: ',0
+
+; Instruction screen messages
+msg_inst1       db 'INSTRUCTIONS',0
+msg_inst2       db 'Arrow Keys - Move car (L/R/Up/Down)',0
+msg_inst3       db 'ESC - Pause and quit confirmation',0
+msg_inst4       db 'Collect coins ($) to increase score',0
+msg_inst5       db 'Collect fuel (F) to refuel',0
+msg_inst6       db 'Avoid obstacles (cyan blocks) to survive',0
+msg_inst7       db 'Press any key to start the game...',0
+
+; Ending screen messages
+msg_end1        db 'GAME OVER',0
+msg_end_quit    db 'You quit the game',0
+msg_end_fuel    db 'You ran out of fuel!',0
+msg_end_crash   db 'You crashed into an obstacle!',0
+msg_end_name    db 'Name: ',0
+msg_end_roll    db 'Roll No: ',0
+msg_end_coins   db 'Coins Collected: ',0
+msg_end_space   db 'Press SPACE to return to main menu',0
+msg_end_esc     db 'Press ESC to exit game',0
+
+; Keyboard ISR data
+old_kb_off      dw 0
+old_kb_seg      dw 0
+key_ready       db 0
+last_scancode   db 0
+; BIOS 16h AH=02h uses this flag; keep in sync by chaining BIOS
+; We only read our own flag in game states.
+
+; ============================================
+; CODE SECTION
+; ============================================
+
+start:
+    ; Set video mode 03h (80x25 text mode, 16 colors)
+    mov ah, 0x00
+    mov al, 0x03
+    int 0x10
+    
+    ; Hide cursor
+    mov ah, 0x01
+    mov cx, 0x2607
+    int 0x10
+    
+    ; Set up video segment
+    mov ax, 0xB800
+    mov es, ax
+    
+    ; Initialize music system (multitasking via timer interrupt)
+    call install_timer_isr
+    
+    ; Initialize state (will show intro screen in state handler)
+    call reset_game_state
+    
+    ; Main game loop with state handling
+    call game_loop
+    
+    ; If game_loop returns (shouldn't happen), clean exit
+    call clean_exit
+    ; Should never reach here
+
+; ============================================
+; PROCEDURES
+; ============================================
+
+; --------------------------------------------
+; Draw the entire background (grass and road)
+; --------------------------------------------
+draw_background:
     push ax
     push bx
+    push cx
+    push dx
+    push di
     
-    in al, 0x60
-    mov [cs:kb_scan], al
+    xor di, di                  ; Start at position 0
+    mov cx, SCREEN_HEIGHT       ; 25 rows
     
-    ; Check if key release (bit 7 set)
-    test al, 0x80
-    jnz .key_release
+.row_loop:
+    push cx
+    mov cx, SCREEN_WIDTH        ; 80 columns per row
+    xor dx, dx                  ; Column counter
     
-    ; Convert scan code to ASCII
-    mov byte [cs:kb_char], 0
+.col_loop:
+    ; Determine if we're on grass or road
+    cmp dx, ROAD_LEFT
+    jl .draw_grass
+    cmp dx, ROAD_RIGHT
+    jge .draw_grass
     
-    ; Check specific keys
-    cmp al, 0x01            ; ESC
-    jne .not_esc
-    mov byte [cs:kb_char], 27
-    jmp .set_flag
+    ; Draw road
+    mov al, ' '                 ; Space character
+    mov ah, ROAD_COLOR
+    jmp .store_char
     
-.not_esc:
-    cmp al, 0x39            ; Space
-    jne .not_space
-    mov byte [cs:kb_char], ' '
-    jmp .set_flag
+.draw_grass:
+    mov al, ' '                 ; Space for grass
+    mov ah, GRASS_COLOR
     
-.not_space:
-    cmp al, 0x1C            ; Enter
-    jne .not_enter
-    mov byte [cs:kb_char], 13
-    jmp .set_flag
+.store_char:
+    mov [es:di], ax
+    add di, 2                   ; Next character position
+    inc dx
+    loop .col_loop
     
-.not_enter:
-    cmp al, 0x0E            ; Backspace
-    jne .not_back
-    mov byte [cs:kb_char], 8
-    jmp .set_flag
+    pop cx
+    loop .row_loop
     
-.not_back:
-    cmp al, 0x0C            ; Dash
-    jne .not_dash
-    mov byte [cs:kb_char], '-'
-    jmp .set_flag
-    
-.not_dash:
-    ; Number row 1-0
-    cmp al, 0x02
-    jb .check_qwerty
-    cmp al, 0x0B
-    ja .check_qwerty
-    sub al, 0x02
-    cmp al, 8
-    jne .num_ok
-    mov al, 9
-    jmp .num_set
-.num_ok:
-    cmp al, 9
-    jne .num_set
-    mov al, -1
-.num_set:
-    inc al
-    add al, '0'
-    mov [cs:kb_char], al
-    jmp .set_flag
-    
-.check_qwerty:
-    mov al, [cs:kb_scan]
-    cmp al, 0x10
-    jne .not_q
-    mov byte [cs:kb_char], 'Q'
-    jmp .set_flag
-.not_q:
-    cmp al, 0x11
-    jne .not_w
-    mov byte [cs:kb_char], 'W'
-    jmp .set_flag
-.not_w:
-    cmp al, 0x12
-    jne .not_e
-    mov byte [cs:kb_char], 'E'
-    jmp .set_flag
-.not_e:
-    cmp al, 0x13
-    jne .not_r
-    mov byte [cs:kb_char], 'R'
-    jmp .set_flag
-.not_r:
-    cmp al, 0x14
-    jne .not_t
-    mov byte [cs:kb_char], 'T'
-    jmp .set_flag
-.not_t:
-    cmp al, 0x15
-    jne .not_y
-    mov byte [cs:kb_char], 'Y'
-    jmp .set_flag
-.not_y:
-    cmp al, 0x16
-    jne .not_u
-    mov byte [cs:kb_char], 'U'
-    jmp .set_flag
-.not_u:
-    cmp al, 0x17
-    jne .not_i
-    mov byte [cs:kb_char], 'I'
-    jmp .set_flag
-.not_i:
-    cmp al, 0x18
-    jne .not_o
-    mov byte [cs:kb_char], 'O'
-    jmp .set_flag
-.not_o:
-    cmp al, 0x19
-    jne .check_asdf
-    mov byte [cs:kb_char], 'P'
-    jmp .set_flag
-    
-.check_asdf:
-    mov al, [cs:kb_scan]
-    cmp al, 0x1E
-    jne .not_a
-    mov byte [cs:kb_char], 'A'
-    jmp .set_flag
-.not_a:
-    cmp al, 0x1F
-    jne .not_s
-    mov byte [cs:kb_char], 'S'
-    jmp .set_flag
-.not_s:
-    cmp al, 0x20
-    jne .not_d
-    mov byte [cs:kb_char], 'D'
-    jmp .set_flag
-.not_d:
-    cmp al, 0x21
-    jne .not_f
-    mov byte [cs:kb_char], 'F'
-    jmp .set_flag
-.not_f:
-    cmp al, 0x22
-    jne .not_g
-    mov byte [cs:kb_char], 'G'
-    jmp .set_flag
-.not_g:
-    cmp al, 0x23
-    jne .not_h
-    mov byte [cs:kb_char], 'H'
-    jmp .set_flag
-.not_h:
-    cmp al, 0x24
-    jne .not_j
-    mov byte [cs:kb_char], 'J'
-    jmp .set_flag
-.not_j:
-    cmp al, 0x25
-    jne .not_k
-    mov byte [cs:kb_char], 'K'
-    jmp .set_flag
-.not_k:
-    cmp al, 0x26
-    jne .check_zxcv
-    mov byte [cs:kb_char], 'L'
-    jmp .set_flag
-    
-.check_zxcv:
-    mov al, [cs:kb_scan]
-    cmp al, 0x2C
-    jne .not_z
-    mov byte [cs:kb_char], 'Z'
-    jmp .set_flag
-.not_z:
-    cmp al, 0x2D
-    jne .not_x
-    mov byte [cs:kb_char], 'X'
-    jmp .set_flag
-.not_x:
-    cmp al, 0x2E
-    jne .not_c
-    mov byte [cs:kb_char], 'C'
-    jmp .set_flag
-.not_c:
-    cmp al, 0x2F
-    jne .not_v
-    mov byte [cs:kb_char], 'V'
-    jmp .set_flag
-.not_v:
-    cmp al, 0x30
-    jne .not_b
-    mov byte [cs:kb_char], 'B'
-    jmp .set_flag
-.not_b:
-    cmp al, 0x31
-    jne .not_n
-    mov byte [cs:kb_char], 'N'
-    jmp .set_flag
-.not_n:
-    cmp al, 0x32
-    jne .set_flag
-    mov byte [cs:kb_char], 'M'
-    
-.set_flag:
-    mov byte [cs:kb_flag], 1
-    
-    ; Game controls
-    cmp byte [cs:game_started], 0
-    je .check_start_key
-    
-    ; If in quit dialog, only handle Y/N and ESC
-    cmp byte [cs:in_quit_dialog], 1
-    je .handle_quit_dialog
-    
-    ; If paused, only handle ESC to resume
-    cmp byte [cs:game_paused], 1
-    je .handle_paused
-    
-    ; Normal game controls
-    mov al, [cs:kb_scan]
-    cmp al, 0x01
-    je .handle_esc
-    cmp al, 0x48
-    je .move_up
-    cmp al, 0x50
-    je .move_down
-    cmp al, 0x4B
-    je .move_left
-    cmp al, 0x4D
-    je .move_right
-    jmp .done
-    
-.check_start_key:
-    ; Check if any key pressed to start animation
-    mov al, [cs:kb_scan]
-    cmp al, 0x80
-    jae .done
-    mov byte [cs:game_animating], 1
-    jmp .done
-    
-.handle_paused:
-    mov al, [cs:kb_scan]
-    cmp al, 0x01
-    jne .done
-    ; ESC pressed while paused - resume
-    mov byte [cs:game_paused], 0
-    mov byte [cs:in_quit_dialog], 0
-    jmp .done
-    
-.handle_quit_dialog:
-    ; In quit dialog - only process ESC, Y, N
-    mov al, [cs:kb_scan]
-    cmp al, 0x01
-    je .quit_dialog_esc
-    ; Y and N are already set in kb_char by the ASCII conversion above
-    ; Just ensure kb_flag is set (already done in .set_flag)
-    jmp .done
-    
-.quit_dialog_esc:
-    ; ESC in dialog - resume game
-    mov byte [cs:game_paused], 0
-    mov byte [cs:in_quit_dialog], 0
-    jmp .done
-    
-.handle_esc:
-    ; ESC pressed - pause and show dialog
-    mov byte [cs:game_paused], 1
-    mov byte [cs:in_quit_dialog], 1
-    jmp .done
-    
-.move_up:
-    ; Move up one block
-    cmp byte [cs:player_row], 1
-    jle .done
-    dec byte [cs:player_row]
-    jmp .done
-    
-.move_down:
-    ; Move down one block, but don't go below screen (car is 2 rows tall, max row is 22)
-    cmp byte [cs:player_row], 22
-    jge .done
-    inc byte [cs:player_row]
-    jmp .done
-    
-.move_left:
-    ; Check if cooldown is active
-    cmp word [cs:lane_change_cooldown], 0
-    jne .done
-    ; Determine target lane
-    mov al, [cs:player_col]
-    cmp al, LANE_LEFT
-    je .done
-    mov bl, LANE_MIDDLE
-    cmp al, LANE_MIDDLE
-    je .left_m_to_l
-    ; From RIGHT to MIDDLE
-    jmp .check_collision_left
-.left_m_to_l:
-    mov bl, LANE_LEFT
-    
-.check_collision_left:
-    ; Check collision at target position before moving
-    push ax
-    push bx
-    mov al, [cs:player_row]
-    ; bl already has target column
-    call check_collision_at_position
-    cmp al, 1
+    pop di
+    pop dx
+    pop cx
     pop bx
     pop ax
-    je .collision_detected_left
-    
-    ; No collision - proceed with move
-    mov [cs:player_col], bl
-    mov word [cs:lane_change_cooldown], 10    ; Set cooldown (10 frames)
-    jmp .done
-    
-.collision_detected_left:
-    ; Collision detected - trigger game over
-    mov byte [cs:game_over], 1
-    mov byte [cs:game_animating], 0    ; Stop animation
-    jmp .done
-    
-.move_right:
-    ; Check if cooldown is active
-    cmp word [cs:lane_change_cooldown], 0
-    jne .done
-    ; Determine target lane
-    mov al, [cs:player_col]
-    cmp al, LANE_RIGHT
-    je .done
-    mov bl, LANE_MIDDLE
-    cmp al, LANE_MIDDLE
-    je .right_m_to_r
-    ; From LEFT to MIDDLE
-    jmp .check_collision_right
-.right_m_to_r:
-    mov bl, LANE_RIGHT
-    
-.check_collision_right:
-    ; Check collision at target position before moving
+    ret
+
+; --------------------------------------------
+; Draw lane markings (two white vertical lines)
+; --------------------------------------------
+draw_lane_markings:
     push ax
     push bx
-    mov al, [cs:player_row]
-    ; bl already has target column
-    call check_collision_at_position
-    cmp al, 1
+    push cx
+    push dx
+    push di
+    
+    mov cx, SCREEN_HEIGHT       ; All 25 rows
+    xor bx, bx                  ; Row counter
+    
+.lane_loop:
+    ; Calculate base position for this row
+    mov ax, bx
+    mov dx, SCREEN_WIDTH * 2
+    mul dx                      ; AX = row * 160
+    mov di, ax
+    
+    ; Create dashed pattern (every 2 rows, skip 2 rows)
+    mov dx, bx
+    and dx, 3                   ; dx = bx % 4
+    cmp dx, 2
+    jge .skip_markings          ; Skip if remainder >= 2 (creates dash effect)
+    
+    ; Draw first lane marking at LANE_MARK_1
+    push di
+    add di, LANE_MARK_1 * 2
+    mov al, 0xB3                ; Double vertical line (more visible)
+    mov ah, LANE_COLOR          ; White on gray
+    mov [es:di], ax
+    pop di
+    
+    ; Draw second lane marking at LANE_MARK_2
+    add di, LANE_MARK_2 * 2
+    mov al, 0xB3                ; Double vertical line
+    mov ah, LANE_COLOR
+    mov [es:di], ax
+    
+.skip_markings:
+    inc bx
+    loop .lane_loop
+    
+    pop di
+    pop dx
+    pop cx
     pop bx
     pop ax
-    je .collision_detected_right
+    ret
+
+; --------------------------------------------
+; Draw the player car (red color)
+; Car is 2 wide x 2 tall, centered on player_x
+; --------------------------------------------
+draw_player_car:
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
     
-    ; No collision - proceed with move
-    mov [cs:player_col], bl
-    mov word [cs:lane_change_cooldown], 10    ; Set cooldown (10 frames)
+    mov bx, [player_y]
+    mov dx, [player_x]
+    
+    ; Adjust dx to center the car (car is 2 wide, start 1 left of center)
+    dec dx
+    
+    ; Row 1 of car (top): "██" (styled)
+    mov ax, bx
+    dec ax                      ; Top row
+    call calc_screen_pos        ; DI = screen position (AX=row, DX=col)
+    
+    mov ah, CAR_COLOR
+    mov al, 0xDB                ; █ block (full block for solid look)
+    mov [es:di], ax
+    add di, 2
+    mov al, 0xDB                ; Full block
+    mov [es:di], ax
+    
+    ; Row 2 of car (bottom): "██" (styled)
+    mov ax, bx                  ; Bottom row
+    call calc_screen_pos        ; DI = screen position (AX=row, DX=col)
+    
+    mov ah, CAR_COLOR
+    mov al, 0xDB                ; Full block
+    mov [es:di], ax
+    add di, 2
+    mov al, 0xDB                ; Full block
+    mov [es:di], ax
+    
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Erase the player car (restore road background)
+; --------------------------------------------
+erase_player_car:
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
+
+    mov bx, [player_y]
+    mov dx, [player_x]
+
+    ; Adjust dx to center the car (car is 2 wide, start 1 left of center)
+    dec dx
+
+    ; Row 1 (top)
+    mov ax, bx
+    dec ax
+    call calc_screen_pos
+    mov ah, ROAD_COLOR
+    mov al, ' '
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+
+    ; Row 2 (bottom)
+    mov ax, bx
+    call calc_screen_pos
+    mov ah, ROAD_COLOR
+    mov al, ' '
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Draw obstacle car (cyan color)
+; 2 wide x 2 tall, centered on obstacle_x
+; --------------------------------------------
+draw_obstacle_car:
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
+    
+    mov bx, [obstacle_y]
+    mov dx, [obstacle_x]
+    
+    ; Adjust dx to center the car (2 wide)
+    dec dx
+    
+    ; Row 1 (top): "██" (styled)
+    mov ax, bx
+    dec ax
+    call calc_screen_pos        ; DI = screen position (AX=row, DX=col)
+    
+    mov ah, OBSTACLE_COLOR
+    mov al, 0xDB                ; Full block
+    mov [es:di], ax
+    add di, 2
+    mov al, 0xDB                ; Full block
+    mov [es:di], ax
+    
+    ; Row 2 (bottom): "██" (styled)
+    mov ax, bx
+    call calc_screen_pos        ; DI = screen position (AX=row, DX=col)
+    
+    mov ah, OBSTACLE_COLOR
+    mov al, 0xDB                ; Full block
+    mov [es:di], ax
+    add di, 2
+    mov al, 0xDB                ; Full block
+    mov [es:di], ax
+    
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Calculate screen position
+; Input: AX = row, DX = column
+; Output: DI = offset in video memory
+; Preserves: AX, DX
+; --------------------------------------------
+calc_screen_pos:
+    push ax
+    push bx
+    push cx
+    push dx
+    
+    ; Save column value before mul (mul uses DX:AX)
+    mov cx, dx                  ; Save column in CX
+    
+    ; Calculate row offset: row * 160
+    mov bx, SCREEN_WIDTH * 2    ; 160 bytes per row
+    mul bx                      ; DX:AX = row * 160 (DX will be 0 for our screen size)
+    mov di, ax                  ; DI = row offset (use only AX since result < 65536)
+    
+    ; Calculate column offset: column * 2
+    mov ax, cx                  ; Get column from saved CX
+    shl ax, 1                   ; Column * 2
+    add di, ax                  ; DI = final position (row*160 + col*2)
+    
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Randomize obstacle X position within road
+; Places car in one of the 3 lanes
+; --------------------------------------------
+randomize_obstacle:
+    push ax
+    push bx
+    push cx
+    push dx
+    
+    ; Get system time (ticks since midnight)
+    mov ah, 0x00
+    int 0x1A                    ; CX:DX = tick count
+    
+    ; Use DX for randomness - pick lane 0, 1, or 2
+    mov ax, dx
+    xor dx, dx
+    mov bx, 3
+    div bx                      ; DX = remainder (0, 1, or 2)
+    
+    ; Calculate X position based on lane
+    ; Lane 0: center at column 30 (25 + 5)
+    ; Lane 1: center at column 40 (35 + 5)  
+    ; Lane 2: center at column 50 (45 + 5)
+    
+    mov ax, dx                  ; Lane number (0, 1, 2)
+    mov bx, 10                  ; Lane width
+    mul bx                      ; AX = lane * 10
+    add ax, ROAD_LEFT           ; Add road start
+    add ax, 5                   ; Center of lane
+    
+    mov [obstacle_x], ax
+    
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Get random lane center (returns AX = 30,40,50)
+; --------------------------------------------
+random_lane_center:
+    push bx
+    push dx
+
+    ; Get system time (ticks since midnight) and combine with seed
+    mov ah, 0x00
+    int 0x1A                    ; CX:DX = tick count
+    
+    ; Combine tick count with seed for better randomness
+    mov ax, [random_seed]
+    add ax, dx                  ; Add tick count to seed
+    inc word [random_seed]       ; Increment seed for next call
+    
+    ; Use combined value for randomness - pick lane 0, 1, or 2
+    xor dx, dx
+    mov bx, 3
+    div bx                      ; DX = remainder (0, 1, or 2)
+
+    ; lane*10 + ROAD_LEFT + 5
+    mov ax, dx
+    mov bx, 10
+    mul bx
+    add ax, ROAD_LEFT
+    add ax, 5
+
+    pop dx
+    pop bx
+    ret
+
+; ============================================
+; ANIMATION PROCEDURES
+; ============================================
+
+; --------------------------------------------
+; Main game loop - handles state machine
+; --------------------------------------------
+game_loop:
+    ; Main game loop - infinite loop that handles different game states
+    ; Exits only via clean_exit() which terminates the program
+.loop:
+    mov ax, [game_state]
+    cmp ax, STATE_INTRO
+    je .state_intro
+    cmp ax, STATE_INPUT
+    je .state_input
+    cmp ax, STATE_INSTRUCTIONS
+    je .state_instructions
+    cmp ax, STATE_WAIT
+    je .state_wait
+    cmp ax, STATE_RUN
+    je .state_run
+    cmp ax, STATE_CONFIRM
+    je .state_confirm
+    cmp ax, STATE_END
+    je .state_end
+    jmp .loop                    ; fallback safety
+
+.state_intro:
+    call handle_intro_state
+    jmp .loop
+
+.state_input:
+    call handle_input_state
+    jmp .loop
+
+.state_instructions:
+    call handle_instructions_state
+    jmp .loop
+
+.state_wait:
+    call handle_wait_state
+    jmp .loop
+
+.state_run:
+    call loop_run_state
+    jmp .loop
+
+.state_confirm:
+    call loop_confirm_state
+    jmp .loop
+
+.state_end:
+    call handle_end_state
+    jmp .loop
+
+; --------------------------------------------
+; Scroll entire screen up by one row
+; Uses REP MOVSW for efficient copying
+; --------------------------------------------
+scroll_up:
+    push ax
+    push cx
+    push si
+    push di
+    push ds
+    
+    ; Set DS to video segment
+    mov ax, 0xB800
+    mov ds, ax
+    mov es, ax                  ; ES already set to 0xB800
+    
+    ; Copy row 1 to row 0, row 2 to row 1, ..., row 24 to row 23
+    ; Source: row 1 (offset 160)
+    ; Destination: row 0 (offset 0)
+    ; Count: 24 rows * 80 columns = 1920 words
+    
+    mov si, SCREEN_WIDTH * 2    ; Source: row 1 (160 bytes)
+    mov di, 0                   ; Destination: row 0
+    mov cx, (SCREEN_HEIGHT - 1) * SCREEN_WIDTH  ; 24 rows * 80 = 1920 words
+    
+    cld                         ; Clear direction flag (forward)
+    rep movsw                   ; Copy CX words from DS:SI to ES:DI
+    
+    pop ds
+    pop di
+    pop si
+    pop cx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Draw new bottom row (row 24) with road and lane markings
+; --------------------------------------------
+draw_bottom_row:
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
+    
+    ; Calculate position of bottom row (row 24)
+    mov ax, SCREEN_HEIGHT - 1   ; Row 24 (0-indexed)
+    mov bx, SCREEN_WIDTH * 2    ; 160 bytes per row
+    mul bx                      ; AX = 24 * 160 = 3840
+    mov di, ax                  ; DI = start of bottom row
+    
+    mov cx, SCREEN_WIDTH        ; 80 columns
+    xor dx, dx                  ; Column counter
+    
+.draw_col:
+    ; Determine if we're on grass or road
+    cmp dx, ROAD_LEFT
+    jl .draw_grass_bottom
+    cmp dx, ROAD_RIGHT
+    jge .draw_grass_bottom
+    
+    ; Draw road
+    mov al, ' '
+    mov ah, ROAD_COLOR
+    jmp .store_bottom
+    
+.draw_grass_bottom:
+    mov al, ' '
+    mov ah, GRASS_COLOR
+    
+.store_bottom:
+    mov [es:di], ax
+    add di, 2
+    inc dx
+    loop .draw_col
+    
+    ; Draw lane markings on bottom row
+    ; Calculate position again
+    mov ax, SCREEN_HEIGHT - 1
+    mov bx, SCREEN_WIDTH * 2
+    mul bx
+    mov di, ax                  ; DI = base of bottom row
+    
+    ; First lane marking at column 35
+    push di
+    add di, LANE_MARK_1 * 2
+    mov al, '|'
+    mov ah, LANE_COLOR
+    mov [es:di], ax
+    pop di
+    
+    ; Second lane marking at column 45
+    add di, LANE_MARK_2 * 2
+    mov al, '|'
+    mov ah, LANE_COLOR
+    mov [es:di], ax
+    
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Delay function for smooth animation
+; Uses timer interrupt for delay
+; --------------------------------------------
+delay:
+    push ax
+    push bx
+    push cx
+    push dx
+    
+    ; Get current tick count
+    mov ah, 0x00
+    int 0x1A                    ; CX:DX = tick count
+    mov bx, dx                  ; Save low word
+    
+.delay_loop:
+    ; Get current tick count again
+    mov ah, 0x00
+    int 0x1A
+    
+    ; Check if enough time has passed (approximately 1-2 ticks)
+    sub dx, bx
+    cmp dx, 2                   ; Wait for 2 ticks (~0.11 seconds at 18.2 Hz)
+    jl .delay_loop
+    
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Handle INTRO state (show intro screen, wait for key)
+; --------------------------------------------
+handle_intro_state:
+    ; Show intro screen once
+    cmp word [confirm_shown], 0
+    jne .poll
+    call show_intro_screen
+    mov word [confirm_shown], 1
+
+.poll:
+    ; Poll BIOS for any key to continue
+    mov ah, 0x01
+    int 0x16
+    jz .no_key
+
+    mov ah, 0x00
+    int 0x16                ; AL=ascii, AH=scan
+
+    ; Check for ESC key
+    cmp ah, 0x01            ; ESC scan code
+    je .esc_pressed
+
+    ; Move to input screen
+    mov word [game_state], STATE_INPUT
+    mov word [confirm_shown], 0
+    ret
+
+.esc_pressed:
+    ; Show exit confirmation (from intro screen)
+    mov word [confirm_from_end], 0
+    mov word [confirm_from_pregame], 1  ; From pre-game state
+    mov word [game_state], STATE_CONFIRM
+    mov word [confirm_shown], 0
+    ret
+
+.no_key:
+    call delay
+    ret
+
+; --------------------------------------------
+; Handle INSTRUCTIONS state (show instructions, wait for key)
+; --------------------------------------------
+handle_instructions_state:
+    ; Show instructions screen once
+    cmp word [confirm_shown], 0
+    jne .poll
+    call show_instructions
+    mov word [confirm_shown], 1
+
+.poll:
+    ; Poll BIOS for any key to start game
+    mov ah, 0x01
+    int 0x16
+    jz .no_key
+
+    mov ah, 0x00
+    int 0x16                ; AL=ascii, AH=scan
+
+    ; Check for ESC key
+    cmp ah, 0x01            ; ESC scan code
+    je .esc_pressed
+
+    ; Start game
+    call reset_game_state
+    mov word [coins_collected], 0    ; Reset coins for new game
+    mov word [movement_cooldown], 0  ; Reset movement cooldown for new game
+    call draw_background
+    call draw_lane_markings
+    call draw_player_car
+    call display_score              ; Display initial score
+    call display_fuel_bar          ; Display initial fuel bar
+    mov word [game_state], STATE_RUN
+    mov word [confirm_shown], 0
+    ret
+
+.esc_pressed:
+    ; Show exit confirmation (from instructions screen)
+    mov word [confirm_from_end], 0
+    mov word [confirm_from_pregame], 1  ; From pre-game state
+    mov word [game_state], STATE_CONFIRM
+    mov word [confirm_shown], 0
+    ret
+
+.no_key:
+    call delay
+    ret
+
+; --------------------------------------------
+; Handle INPUT state (get player name and roll number)
+; --------------------------------------------
+handle_input_state:
+    ; Show input screen once
+    cmp word [confirm_shown], 0
+    jne .done
+    call show_input_screen
+    call input_player_name
+    ; Check if ESC was pressed (state changed to CONFIRM)
+    cmp word [game_state], STATE_CONFIRM
+    je .esc_pressed
+    call input_player_roll
+    ; Check again if ESC was pressed during roll input
+    cmp word [game_state], STATE_CONFIRM
+    je .esc_pressed
+    mov word [confirm_shown], 1
+    ; Move to instructions screen
+    mov word [game_state], STATE_INSTRUCTIONS
+    mov word [confirm_shown], 0
+    ret
+
+.esc_pressed:
+    ; ESC was pressed, state already set to CONFIRM by input function
+    ret
+
+.done:
+    call delay
+    ret
+
+; --------------------------------------------
+; Handle WAIT state (static screen until keypress)
+; --------------------------------------------
+handle_wait_state:
+    ; Poll BIOS for any key to start
+    mov ah, 0x01
+    int 0x16
+    jz .no_key
+
+    mov ah, 0x00
+    int 0x16
+
+    ; Start game
+    call reset_game_state
+    call draw_background
+    call draw_lane_markings
+    call draw_player_car
+    call display_score              ; Display initial score
+    call display_fuel_bar          ; Display initial fuel bar
+    mov word [game_state], STATE_RUN
+    ret
+
+.no_key:
+    call delay
+    ret
+
+; --------------------------------------------
+; Main running loop iteration (STATE_RUN)
+; --------------------------------------------
+loop_run_state:
+    ; Erase previous frame entities/player
+    call erase_entities
+    call erase_player_car
+
+    ; Update logic
+    call update_entities
+    call spawn_entities
+    
+    ; Check if collision already occurred (stop animation)
+    cmp word [collision_occurred], 1
+    je .collision_handled
+    
+    ; Update movement cooldown (decrement if > 0)
+    cmp word [movement_cooldown], 0
+    je .cooldown_done
+    dec word [movement_cooldown]
+.cooldown_done:
+    
+    call handle_running_input
+
+    ; Check for collision with obstacles
+    call check_collision
+    cmp ax, 1
+    jne .no_collision
+    
+    ; Collision detected! Show sparks and end game
+    mov word [collision_occurred], 1
+    call draw_sparks
+    
+    ; Show sparks for a moment
+    mov cx, 10                  ; Delay loop count
+.spark_delay:
+    push cx
+    call delay
+    pop cx
+    loop .spark_delay
+    
+    ; Trigger crash end
+    mov word [end_cause], 2      ; 2 = crash
+    mov word [game_state], STATE_END
+    mov word [confirm_shown], 0
+    ret
+    
+.no_collision:
+    ; Check for coin collection
+    call check_coin_collection
+    
+    ; Check for fuel collection
+    call check_fuel_collection
+    
+    ; Deplete fuel over time
+    inc word [fuel_deplete_counter]
+    cmp word [fuel_deplete_counter], FUEL_DEPLETE_TICKS
+    jl .fuel_check
+    ; Time to deplete fuel
+    mov word [fuel_deplete_counter], 0
+    cmp word [fuel_level], 0
+    je .fuel_check              ; Already at 0, don't go negative
+    dec word [fuel_level]       ; Decrease fuel by 1
+    
+.fuel_check:
+    ; Check if fuel reached 0
+    cmp word [fuel_level], 0
+    jne .fuel_ok
+    
+    ; Fuel ended! Stop animation and show ending screen
+    mov word [collision_occurred], 1  ; Stop animation
+    call trigger_fuel_end
+    ret
+    
+.fuel_ok:
+    ; Draw new frame
+    call draw_entities
+    call draw_player_car
+    
+    ; Display score and fuel bar
+    call display_score
+    call display_fuel_bar
+
+    ; Frame delay
+    call delay
+    ret
+
+.collision_handled:
+    ; Collision already handled, just wait (game state should be END by now)
+    call delay
+    ret
+
+; --------------------------------------------
+; Confirmation loop (STATE_CONFIRM)
+; --------------------------------------------
+loop_confirm_state:
+    ; Show confirm screen once
+    cmp word [confirm_shown], 0
+    jne .poll
+    call show_confirm_screen
+    mov word [confirm_shown], 1
+
+.poll:
+    mov ah, 0x01
+    int 0x16
+    jz .no_key
+
+    mov ah, 0x00
+    int 0x16                ; AL=ascii, AH=scan
+
+    ; ESC -> resume
+    cmp ah, 0x01
+    je .resume
+
+    ; y or Y -> quit to intro
+    cmp al, 'y'
+    je .quit
+    cmp al, 'Y'
+    je .quit
+
+    ; n or N -> resume
+    cmp al, 'n'
+    je .resume
+    cmp al, 'N'
+    je .resume
+
+    jmp .no_key             ; other keys ignored
+
+.resume:
+    ; Check if we came from ending screen
+    cmp word [confirm_from_end], 1
+    je .resume_to_end
+    ; Check if we came from pre-game state - resume to intro
+    cmp word [confirm_from_pregame], 1
+    je .resume_to_intro
+    ; Normal resume to game
+    mov word [game_state], STATE_RUN
+    mov word [confirm_shown], 0
+    call redraw_scene
+    ret
+.resume_to_end:
+    ; Resume back to ending screen
+    mov word [game_state], STATE_END
+    mov word [confirm_shown], 0
+    mov word [confirm_from_end], 0
+    ret
+.resume_to_intro:
+    ; Resume back to intro screen (from pre-game confirm)
+    mov word [game_state], STATE_INTRO
+    mov word [confirm_shown], 0
+    mov word [confirm_from_pregame], 0
+    ret
+
+.quit:
+    ; Check if we came from ending screen or pre-game state
+    cmp word [confirm_from_end], 1
+    je .quit_program
+    cmp word [confirm_from_pregame], 1
+    je .quit_program
+    ; Normal quit from game (during gameplay)
+    mov word [end_cause], 0      ; 0 = quit
+    mov word [game_state], STATE_END
+    mov word [confirm_shown], 0
+    mov word [confirm_from_end], 0
+    mov word [confirm_from_pregame], 0
+    ret
+.quit_program:
+    ; Exit program completely - call clean exit function
+    mov word [confirm_from_end], 0
+    mov word [confirm_from_pregame], 0
+    call clean_exit
+    ; Should never return, but just in case
+    ret
+
+.no_key:
+    call delay
+    ret
+
+; --------------------------------------------
+; Handle movement / pause keys during RUN state
+; --------------------------------------------
+handle_running_input:
+    mov ah, 0x01
+    int 0x16
+    jz .done
+
+    mov ah, 0x00
+    int 0x16                ; AL=ascii, AH=scan
+
+    cmp ah, 0x01            ; ESC -> confirm
+    je .to_confirm
+
+    ; Check movement cooldown before allowing any movement
+    cmp word [movement_cooldown], 0
+    jne .done                ; Still on cooldown, ignore movement keys
+
+    cmp ah, 0x4B            ; Left arrow
+    jne .chk_right
+    call move_left_lane
+    mov word [movement_cooldown], MOVEMENT_COOLDOWN
+    jmp .done
+
+.chk_right:
+    cmp ah, 0x4D            ; Right arrow
+    jne .chk_up
+    call move_right_lane
+    mov word [movement_cooldown], MOVEMENT_COOLDOWN
+    jmp .done
+
+.chk_up:
+    cmp ah, 0x48            ; Up arrow
+    jne .chk_down
+    call move_up
+    mov word [movement_cooldown], MOVEMENT_COOLDOWN
+    jmp .done
+
+.chk_down:
+    cmp ah, 0x50            ; Down arrow
+    jne .done
+    call move_down
+    mov word [movement_cooldown], MOVEMENT_COOLDOWN
+    jmp .done
+
+.to_confirm:
+    mov word [confirm_from_end], 0  ; Not from ending screen
+    mov word [confirm_from_pregame], 0  ; Not from pre-game state
+    mov word [game_state], STATE_CONFIRM
+    mov word [confirm_shown], 0
+    ret
+
+.done:
+    ret
+
+; --------------------------------------------
+; Movement helpers
+; --------------------------------------------
+move_left_lane:
+    cmp word [player_x], LANE_LEFT
+    jle .clamp
+    
+    ; Check if collision would occur at new position
+    mov ax, [player_x]
+    sub ax, 10                  ; New X position
+    mov bx, [player_y]           ; Same Y position
+    call check_collision_at_position
+    cmp ax, 1
+    je .collision_detected       ; Would collide, don't move
+    
+    sub word [player_x], 10
+    jmp .clamp
+    
+.collision_detected:
+    ; Collision detected - trigger crash
+    call trigger_collision_crash
+    jmp .clamp
+    
+.clamp:
+    ret
+
+move_right_lane:
+    cmp word [player_x], LANE_RIGHT
+    jge .clamp_r
+    
+    ; Check if collision would occur at new position
+    mov ax, [player_x]
+    add ax, 10                   ; New X position
+    mov bx, [player_y]           ; Same Y position
+    call check_collision_at_position
+    cmp ax, 1
+    je .collision_detected       ; Would collide, don't move
+    
+    add word [player_x], 10
+    jmp .clamp_r
+    
+.collision_detected:
+    ; Collision detected - trigger crash
+    call trigger_collision_crash
+    jmp .clamp_r
+    
+.clamp_r:
+    ret
+
+move_up:
+    cmp word [player_y], 1
+    jle .u_end
+    
+    ; Check if collision would occur at new position
+    mov ax, [player_x]           ; Same X position
+    mov bx, [player_y]
+    dec bx                       ; New Y position (up)
+    call check_collision_at_position
+    cmp ax, 1
+    je .collision_detected       ; Would collide, don't move
+    
+    dec word [player_y]
+    jmp .u_end
+    
+.collision_detected:
+    ; Collision detected - trigger crash
+    call trigger_collision_crash
+    jmp .u_end
+    
+.u_end:
+    ret
+
+move_down:
+    cmp word [player_y], SCREEN_HEIGHT - 1
+    jge .d_end
+    
+    ; Check if collision would occur at new position
+    mov ax, [player_x]           ; Same X position
+    mov bx, [player_y]
+    inc bx                       ; New Y position (down)
+    call check_collision_at_position
+    cmp ax, 1
+    je .collision_detected       ; Would collide, don't move
+    
+    inc word [player_y]
+    jmp .d_end
+    
+.collision_detected:
+    ; Collision detected - trigger crash
+    call trigger_collision_crash
+    jmp .d_end
+    
+.d_end:
+    ret
+
+; --------------------------------------------
+; Check if player car collides with obstacle car
+; Returns: AX = 1 if collision, 0 if no collision
+; --------------------------------------------
+check_collision:
+    push bx
+    push cx
+    push dx
+    
+    ; Check if obstacle is active
+    cmp word [obstacle_active], 0
+    je .no_collision
+    
+    ; Player car occupies: rows [player_y-1, player_y], cols [player_x-1, player_x]
+    ; Obstacle car occupies: rows [obstacle_y-1, obstacle_y], cols [obstacle_x-1, obstacle_x]
+    
+    ; Check X overlap: (player_x-1 <= obstacle_x && player_x >= obstacle_x-1)
+    mov ax, [player_x]
+    dec ax                      ; player_x - 1
+    cmp ax, [obstacle_x]
+    jg .no_collision            ; player_x-1 > obstacle_x, no overlap
+    
+    mov ax, [player_x]
+    mov bx, [obstacle_x]
+    dec bx                      ; obstacle_x - 1
+    cmp ax, bx
+    jl .no_collision            ; player_x < obstacle_x-1, no overlap
+    
+    ; Check Y overlap: (player_y-1 <= obstacle_y && player_y >= obstacle_y-1)
+    mov ax, [player_y]
+    dec ax                      ; player_y - 1
+    cmp ax, [obstacle_y]
+    jg .no_collision            ; player_y-1 > obstacle_y, no overlap
+    
+    mov ax, [player_y]
+    mov bx, [obstacle_y]
+    dec bx                      ; obstacle_y - 1
+    cmp ax, bx
+    jl .no_collision            ; player_y < obstacle_y-1, no overlap
+    
+    ; Collision detected!
+    mov ax, 1
     jmp .done
     
-.collision_detected_right:
-    ; Collision detected - trigger game over
-    mov byte [cs:game_over], 1
-    mov byte [cs:game_animating], 0    ; Stop animation
-    jmp .done
-    
-.key_release:
-    ; Ignore key releases
-    jmp .done
+.no_collision:
+    mov ax, 0
     
 .done:
-    mov al, 0x20
-    out 0x20, al
+    pop dx
+    pop cx
     pop bx
-    pop ax
-    iret
+    ret
 
-; ==========================================================
-; --- Keyboard functions ---
-; ==========================================================
-
-get_key:
+; --------------------------------------------
+; Check if player car collects a coin
+; Returns: AX = 1 if coin collected, 0 otherwise
+; If coin collected, increments score and deactivates coin
+; --------------------------------------------
+check_coin_collection:
     push bx
     push cx
-.wait:
-    mov byte [kb_flag], 0
-    mov cx, 10
-.delay_loop:
-    push cx
-    mov cx, 0x1FFF
-.inner:
-    loop .inner
-    pop cx
-    loop .delay_loop
+    push dx
     
-    cmp byte [kb_flag], 0
-    je .wait
-    mov al, [kb_char]
-    cmp al, 0
-    je .wait
+    ; Check if coin is active
+    cmp word [coin_active], 0
+    je .no_collection
+    
+    ; Player car occupies: rows [player_y-1, player_y], cols [player_x-1, player_x]
+    ; Coin is at: row [coin_y], col [coin_x] (single character)
+    
+    ; Check if coin is within player car's X range
+    mov ax, [player_x]
+    dec ax                      ; player_x - 1
+    cmp ax, [coin_x]
+    jg .no_collection           ; player_x-1 > coin_x, coin is to the left
+    
+    mov ax, [player_x]
+    cmp ax, [coin_x]
+    jl .no_collection           ; player_x < coin_x, coin is to the right
+    
+    ; Check if coin is within player car's Y range
+    mov ax, [player_y]
+    dec ax                      ; player_y - 1
+    cmp ax, [coin_y]
+    jg .no_collection           ; player_y-1 > coin_y, coin is above
+    
+    mov ax, [player_y]
+    cmp ax, [coin_y]
+    jl .no_collection           ; player_y < coin_y, coin is below
+    
+    ; Coin collected!
+    inc word [coins_collected]   ; Increment score
+    mov word [coin_active], 0   ; Deactivate coin
+    mov ax, 1
+    jmp .done
+    
+.no_collection:
+    mov ax, 0
+    
+.done:
+    pop dx
     pop cx
     pop bx
     ret
 
-wait_space:
+; --------------------------------------------
+; Check if player car collects fuel
+; Returns: AX = 1 if fuel collected, 0 otherwise
+; If fuel collected, refills fuel tank and deactivates fuel icon
+; --------------------------------------------
+check_fuel_collection:
+    push bx
+    push cx
+    push dx
+    
+    ; Check if fuel is active
+    cmp word [fuel_active], 0
+    je .no_collection
+    
+    ; Player car occupies: rows [player_y-1, player_y], cols [player_x-1, player_x]
+    ; Fuel is at: row [fuel_y], col [fuel_x] (single character)
+    
+    ; Check if fuel is within player car's X range
+    mov ax, [player_x]
+    dec ax                      ; player_x - 1
+    cmp ax, [fuel_x]
+    jg .no_collection           ; player_x-1 > fuel_x, fuel is to the left
+    
+    mov ax, [player_x]
+    cmp ax, [fuel_x]
+    jl .no_collection           ; player_x < fuel_x, fuel is to the right
+    
+    ; Check if fuel is within player car's Y range
+    mov ax, [player_y]
+    dec ax                      ; player_y - 1
+    cmp ax, [fuel_y]
+    jg .no_collection           ; player_y-1 > fuel_y, fuel is above
+    
+    mov ax, [player_y]
+    cmp ax, [fuel_y]
+    jl .no_collection           ; player_y < fuel_y, fuel is below
+    
+    ; Fuel collected!
+    mov ax, [fuel_level]
+    add ax, FUEL_REFILL_AMOUNT  ; Add refill amount
+    cmp ax, MAX_FUEL
+    jle .refill
+    mov ax, MAX_FUEL            ; Cap at maximum
+.refill:
+    mov [fuel_level], ax        ; Update fuel level
+    mov word [fuel_active], 0   ; Deactivate fuel icon
+    mov ax, 1
+    jmp .done
+    
+.no_collection:
+    mov ax, 0
+    
+.done:
+    pop dx
+    pop cx
+    pop bx
+    ret
+
+; --------------------------------------------
+; Display score on screen (top-left corner)
+; Uses direct video memory writes
+; --------------------------------------------
+display_score:
     push ax
-.wait:
-    call get_key
-    cmp al, ' '
-    jne .wait
+    push bx
+    push cx
+    push dx
+    push di
+    push si
+    push es
+    
+    mov ax, 0xB800
+    mov es, ax
+    
+    ; Calculate screen position: row 0, col 0
+    ; DI = row * 160 + col * 2 = 0 * 160 + 0 * 2 = 0
+    mov di, 0
+    
+    ; Display "Score: " label
+    mov si, score_label
+    mov ah, 0x0F                ; White on black
+    
+.display_label:
+    lodsb
+    cmp al, 0
+    je .display_value
+    stosw
+    jmp .display_label
+    
+.display_value:
+    ; Display score value using print_number_at
+    mov ax, [coins_collected]
+    call print_number_at         ; Prints number at current DI position
+    
+    pop es
+    pop si
+    pop di
+    pop dx
+    pop cx
+    pop bx
     pop ax
     ret
 
-reset_game_state:
-    ; Clear all game arrays using loops for efficiency
-    mov byte [obs_count], 0
-    mov si, obs_rows
-    mov cx, 3
-.clear_obs_rows:
-    mov byte [si], 0
-    inc si
-    loop .clear_obs_rows
-    mov si, obs_cols
-    mov cx, 3
-.clear_obs_cols:
-    mov byte [si], 0
-    inc si
-    loop .clear_obs_cols
-    
-    mov byte [coin_count], 0
-    mov si, coin_rows
-    mov cx, 3
-.clear_coin_rows:
-    mov byte [si], 0
-    inc si
-    loop .clear_coin_rows
-    mov si, coin_cols
-    mov cx, 3
-.clear_coin_cols:
-    mov byte [si], 0
-    inc si
-    loop .clear_coin_cols
-    
-    mov byte [fuel_count], 0
-    mov si, fuel_rows
-    mov cx, 2
-.clear_fuel_rows:
-    mov byte [si], 0
-    inc si
-    loop .clear_fuel_rows
-    mov si, fuel_cols
-    mov cx, 2
-.clear_fuel_cols:
-    mov byte [si], 0
-    inc si
-    loop .clear_fuel_cols
-    
-    mov word [frame_counter], 0
-    mov word [update_counter], 0
-    mov word [player_score], 0
-    mov byte [player_row], 20
-    mov byte [player_col], LANE_MIDDLE
-    ; Initialize prev_player to 0,0 to force first draw
-    mov byte [prev_player_row], 0
-    mov byte [prev_player_col], 0
-    ; Initialize fuel system
-    mov byte [fuel_level], 100
-    mov word [fuel_timer], 0
-    mov byte [game_animating], 0
-    mov byte [in_quit_dialog], 0
-    mov byte [game_over], 0
-    mov word [lane_change_cooldown], 0
-    ret
-
-; ==========================================================
-; --- Subroutines ---
-; ==========================================================
-
-hook_keyboard:
-    pusha
-    xor ax, ax
-    mov es, ax
-    ; Hook keyboard interrupt
-    mov ax, [es:9*4]
-    mov [old_kb_isr], ax
-    mov ax, [es:9*4+2]
-    mov [old_kb_isr+2], ax
-    cli
-    mov word [es:9*4], keyboard_isr
-    mov [es:9*4+2], cs
-    ; Hook software interrupt 0x60 for quit dialog
-    mov word [es:0x60*4], quit_dialog_isr
-    mov [es:0x60*4+2], cs
-    sti
-    popa
-    ret
-
-restore_keyboard:
-    pusha
-    xor ax, ax
-    mov es, ax
-    cli
-    mov ax, [old_kb_isr]
-    mov [es:9*4], ax
-    mov ax, [old_kb_isr+2]
-    mov [es:9*4+2], ax
-    sti
-    popa
-    ret
-
-clear_screen:
-    pusha
+; --------------------------------------------
+; Display fuel bar on screen (top-left, next to score)
+; Shows a green bar representing fuel level
+; Uses direct video memory writes
+; --------------------------------------------
+display_fuel_bar:
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
+    push si
     push es
-    mov ax, 0xb800
+    
+    mov ax, 0xB800
     mov es, ax
-    mov di, 0
-    mov cx, 2000
-    mov ax, 0x0720
-    rep stosw
+    
+    ; Calculate screen position: row 0, col 12 (after "Score: X")
+    ; DI = row * 160 + col * 2 = 0 * 160 + 12 * 2 = 24
+    mov di, 24
+    
+    ; Display "Fuel: " label
+    mov si, fuel_label
+    mov ah, 0x0F                ; White on black
+    
+.display_label:
+    lodsb
+    cmp al, 0
+    je .display_bar
+    stosw
+    jmp .display_label
+    
+.display_bar:
+    ; Calculate fuel bar length (0-20 characters)
+    ; Each unit = 5 fuel (100 / 20 = 5)
+    mov ax, [fuel_level]
+    mov bl, 5
+    div bl                      ; AL = fuel_level / 5 (0-20)
+    mov cl, al                  ; CL = bar length
+    mov ch, 0
+    
+    ; Fuel bar is always green
+    mov ah, FUEL_BAR_GREEN      ; Green on black
+    mov al, 0xDB                ; Solid block character
+    
+    ; Draw filled portion
+    mov bx, cx                  ; Save length
+.draw_filled:
+    cmp cx, 0
+    je .draw_empty
+    stosw
+    dec cx
+    jmp .draw_filled
+    
+.draw_empty:
+    ; Draw empty portion (20 - filled)
+    mov cx, 20
+    sub cx, bx                  ; CX = 20 - filled_length
+    cmp cx, 0
+    je .done
+    mov al, 0xB0                ; Light shade character
+    mov ah, 0x07                ; Gray on black
+.draw_empty_loop:
+    stosw
+    loop .draw_empty_loop
+    
+.done:
     pop es
-    popa
+    pop si
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax
     ret
 
+; --------------------------------------------
+; Check if movement to new position would cause collision
+; Input: AX = new player_x, BX = new player_y
+; Returns: AX = 1 if collision would occur, 0 otherwise
+; --------------------------------------------
+check_collision_at_position:
+    push bx
+    push cx
+    push dx
+    push si
+    
+    ; Save original positions
+    mov cx, [player_x]
+    mov dx, [player_y]
+    mov si, [obstacle_active]
+    
+    ; Temporarily set new position
+    mov [player_x], ax
+    mov [player_y], bx
+    
+    ; Check collision
+    call check_collision
+    
+    ; Restore original positions
+    mov [player_x], cx
+    mov [player_y], dx
+    
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    ret
+
+; --------------------------------------------
+; Draw spark effect (yellow pixels) at collision location
+; Draws sparks around both cars
+; --------------------------------------------
+draw_sparks:
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
+    
+    ; Draw sparks around player car position
+    mov bx, [player_y]
+    mov dx, [player_x]
+    
+    ; Top-left spark
+    mov ax, bx
+    dec ax
+    dec ax                      ; 2 rows above
+    mov cx, dx
+    dec cx
+    dec cx                      ; 2 cols left
+    call draw_single_spark
+    
+    ; Top-right spark
+    mov ax, bx
+    dec ax
+    dec ax
+    mov cx, dx
+    inc cx                      ; 2 cols right
+    call draw_single_spark
+    
+    ; Bottom-left spark
+    mov ax, bx
+    inc ax                      ; 2 rows below
+    mov cx, dx
+    dec cx
+    dec cx
+    call draw_single_spark
+    
+    ; Bottom-right spark
+    mov ax, bx
+    inc ax
+    mov cx, dx
+    inc cx
+    call draw_single_spark
+    
+    ; Draw sparks around obstacle car position
+    cmp word [obstacle_active], 0
+    je .sparks_done
+    
+    mov bx, [obstacle_y]
+    mov dx, [obstacle_x]
+    
+    ; Top-left spark
+    mov ax, bx
+    dec ax
+    dec ax
+    mov cx, dx
+    dec cx
+    dec cx
+    call draw_single_spark
+    
+    ; Top-right spark
+    mov ax, bx
+    dec ax
+    dec ax
+    mov cx, dx
+    inc cx
+    call draw_single_spark
+    
+    ; Bottom-left spark
+    mov ax, bx
+    inc ax
+    mov cx, dx
+    dec cx
+    dec cx
+    call draw_single_spark
+    
+    ; Bottom-right spark
+    mov ax, bx
+    inc ax
+    mov cx, dx
+    inc cx
+    call draw_single_spark
+    
+.sparks_done:
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Draw a single spark at position (AX=row, CX=col)
+; --------------------------------------------
+draw_single_spark:
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
+    
+    ; Check bounds
+    cmp ax, 0
+    jl .done
+    cmp ax, SCREEN_HEIGHT
+    jge .done
+    cmp cx, 0
+    jl .done
+    cmp cx, SCREEN_WIDTH
+    jge .done
+    
+    ; Calculate screen position
+    mov dx, cx
+    call calc_screen_pos        ; DI = screen position (AX=row, DX=col)
+    
+    ; Draw spark character (asterisk or star)
+    mov ah, SPARK_COLOR
+    mov al, '*'                 ; Spark character
+    mov [es:di], ax
+    
+.done:
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Consume one scancode if ready (clears flag)
+; Returns AL = scancode (make or break)
+; --------------------------------------------
+consume_key_scancode:
+    mov al, [last_scancode]
+    mov byte [key_ready], 0
+    ret
+
+; --------------------------------------------
+; Install custom keyboard ISR (hooks INT 9)
+; --------------------------------------------
+install_keyboard_isr:
+    push ax
+    push bx
+    push ds
+
+    cli
+    xor ax, ax
+    mov ds, ax
+    mov bx, 9*4
+    mov ax, [ds:bx]
+    mov [old_kb_off], ax
+    mov ax, [ds:bx+2]
+    mov [old_kb_seg], ax
+
+    ; Set new vector to kb_isr
+    mov word [ds:bx], kb_isr
+    mov word [ds:bx+2], cs
+
+    sti
+
+    pop ds
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Uninstall keyboard ISR (restore INT 9)
+; --------------------------------------------
+uninstall_keyboard_isr:
+    push ax
+    push bx
+    push ds
+
+    cli
+    xor ax, ax
+    mov ds, ax
+    mov bx, 9*4
+    mov ax, [old_kb_off]
+    mov [ds:bx], ax
+    mov ax, [old_kb_seg]
+    mov [ds:bx+2], ax
+    sti
+
+    pop ds
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Keyboard ISR: capture scancode, flag ready, chain to BIOS
+; --------------------------------------------
+kb_isr:
+    push ax
+    push ds
+
+    in al, 60h               ; read scancode
+
+    mov ax, cs
+    mov ds, ax               ; DS = CS
+    mov [last_scancode], al
+    mov byte [key_ready], 1
+
+    pop ds
+    pop ax
+
+    jmp far [old_kb_off]     ; chain to BIOS handler (sends EOI, maintains flags)
+
+; ============================================
+; MUSIC SYSTEM (Multitasking via Timer Interrupt)
+; ============================================
+
+; --------------------------------------------
+; Install timer interrupt handler (INT 1Ch)
+; INT 1Ch is called by INT 8 (timer) 18.2 times per second
+; This allows music to play independently of the game loop (multitasking)
+; --------------------------------------------
+install_timer_isr:
+    push ax
+    push bx
+    push ds
+    
+    ; Save old interrupt vector
+    cli                         ; Disable interrupts during vector change
+    xor ax, ax
+    mov ds, ax                  ; DS = 0 (interrupt vector table)
+    mov bx, 0x1C * 4            ; INT 1Ch vector (0x1C * 4 = 0x70)
+    
+    mov ax, [ds:bx]             ; Get offset
+    mov [old_timer_off], ax
+    mov ax, [ds:bx+2]           ; Get segment
+    mov [old_timer_seg], ax
+    
+    ; Store far pointer for reliable chaining (offset:segment format)
+    mov ax, [old_timer_off]
+    mov word [old_timer_ptr], ax    ; Store offset (low word)
+    mov ax, [old_timer_seg]
+    mov word [old_timer_ptr+2], ax  ; Store segment (high word)
+    
+    ; Install our handler
+    mov ax, cs
+    mov [ds:bx+2], ax           ; Set segment to CS
+    mov ax, timer_isr
+    mov [ds:bx], ax             ; Set offset to timer_isr
+    
+    sti                         ; Re-enable interrupts
+    
+    ; Initialize music state
+    mov word [music_note_index], 0
+    mov word [music_note_counter], 1  ; Start with 1 so first note plays after first tick
+    mov word [music_enabled], 1       ; Music enabled
+    
+    pop ds
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Uninstall timer interrupt handler
+; Restores original INT 1Ch vector
+; --------------------------------------------
+uninstall_timer_isr:
+    push ax
+    push bx
+    push ds
+    
+    cli                         ; Disable interrupts during vector change
+    xor ax, ax
+    mov ds, ax                  ; DS = 0
+    mov bx, 0x1C * 4            ; INT 1Ch vector
+    
+    ; Restore original vector
+    mov ax, [old_timer_off]
+    mov [ds:bx], ax
+    mov ax, [old_timer_seg]
+    mov [ds:bx+2], ax
+    
+    sti                         ; Re-enable interrupts
+    
+    ; Clear old vector storage
+    mov word [old_timer_off], 0
+    mov word [old_timer_seg], 0
+    mov word [old_timer_ptr], 0
+    mov word [old_timer_ptr+2], 0
+    
+    ; Stop speaker
+    call stop_music
+    
+    pop ds
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Timer interrupt handler (INT 1Ch)
+; Called 18.2 times per second by BIOS timer
+; Updates music state and plays notes
+; This runs as a separate "process" via multitasking
+; --------------------------------------------
+timer_isr:
+    ; Save all registers we'll use
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push ds
+    
+    ; Set DS to CS for accessing our data
+    mov ax, cs
+    mov ds, ax
+    
+    ; Check if music is enabled
+    cmp word [music_enabled], 0
+    je .chain_timer
+    
+    ; Decrement note counter (only process music if counter reached 0)
+    cmp word [music_note_counter], 0
+    jne .decrement_counter
+    
+    ; Counter is 0, time to play next note
+    ; Get current note from music data
+    mov si, music_data
+    mov bx, [music_note_index]
+    shl bx, 2                   ; Each entry is 4 bytes (2 words)
+    add si, bx                  ; SI points to current note
+    
+    ; Check for end marker
+    mov ax, [si]                ; Get frequency
+    cmp ax, MUSIC_END
+    je .restart_music
+    
+    ; Get frequency and duration
+    mov ax, [si]                ; Frequency
+    mov cx, [si+2]              ; Duration in ticks
+    
+    ; Only play note if duration is valid (avoid playing too fast)
+    cmp cx, 0
+    je .skip_note
+    
+    ; Play the note (this is fast - just sets timer and port)
+    call play_note
+    
+    ; Set note counter to duration (will count down)
+    mov [music_note_counter], cx
+    
+    ; Move to next note
+    inc word [music_note_index]
+    jmp .chain_timer
+    
+.skip_note:
+    ; Skip note with 0 duration, move to next
+    inc word [music_note_index]
+    mov word [music_note_counter], 1  ; Set to 1 so it decrements next time
+    jmp .chain_timer
+    
+.restart_music:
+    ; Loop back to beginning
+    mov word [music_note_index], 0
+    mov word [music_note_counter], 1  ; Start with 1 so first note plays on next tick
+    jmp .chain_timer
+    
+.decrement_counter:
+    ; Just decrement counter, don't play note
+    dec word [music_note_counter]
+    jmp .chain_timer
+    
+.chain_timer:
+    ; Chain to original timer interrupt
+    ; Restore all registers first
+    pop ds
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    
+    ; Safety check: ensure original handler is valid
+    cmp word [old_timer_off], 0
+    je .no_chain                 ; If invalid, just return
+    
+    ; Chain to original INT 1Ch handler using far jump
+    ; This is more reliable than manipulating the stack
+    ; Stack currently has: [FLAGS] [CS] [IP] from INT 8
+    ; We'll replace CS:IP on stack, then iret
+    pop bx                       ; Pop IP (discard - it's our handler address)
+    pop bx                       ; Pop CS (discard)
+    ; Stack now has just FLAGS
+    push word [old_timer_seg]    ; Push original handler segment
+    push word [old_timer_off]    ; Push original handler offset
+    iret                         ; Jump to original handler
+    
+.no_chain:
+    ; No valid handler to chain to, just return normally
+    iret
+
+; --------------------------------------------
+; Play a note on PC speaker
+; Input: AX = frequency in Hz (0 = silence/rest)
+; Uses timer 2 and port 0x61 to control speaker
+; --------------------------------------------
+play_note:
+    push ax
+    push bx
+    push cx
+    push dx
+    
+    ; Check for silence (rest)
+    cmp ax, 0
+    je .silence
+    
+    ; Calculate timer divisor: 1193180 / frequency
+    ; Timer 2 runs at 1.19318 MHz, we divide by frequency
+    ; 1193180 = 0x1234DC
+    mov bx, ax                  ; Save frequency in BX
+    mov dx, 0x0012              ; High word of 1193180
+    mov ax, 0x34DC              ; Low word of 1193180
+    div bx                      ; DX:AX / BX = quotient in AX, remainder in DX
+    mov bx, ax                  ; Save divisor (quotient)
+    
+    ; Program timer 2
+    mov al, 0xB6                ; Channel 2, mode 3 (square wave), binary
+    out 0x43, al                ; Write to timer control port
+    
+    ; Send low byte of divisor
+    mov al, bl
+    out 0x42, al                ; Timer 2 data port
+    
+    ; Send high byte of divisor
+    mov al, bh
+    out 0x42, al
+    
+    ; Enable speaker (port 0x61)
+    in al, 0x61                 ; Read current port 0x61 value
+    or al, 0x03                 ; Set bits 0 and 1 (enable timer 2 gate and speaker)
+    out 0x61, al
+    
+    jmp .done
+    
+.silence:
+    ; Turn off speaker
+    in al, 0x61                 ; Read current port 0x61 value
+    and al, 0xFC                ; Clear bits 0 and 1 (disable speaker)
+    out 0x61, al
+    
+.done:
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Stop music (turn off speaker)
+; --------------------------------------------
+stop_music:
+    push ax
+    
+    ; Turn off speaker
+    in al, 0x61                 ; Read current port 0x61 value
+    and al, 0xFC                ; Clear bits 0 and 1 (disable speaker)
+    out 0x61, al
+    
+    ; Disable music
+    mov word [music_enabled], 0
+    
+    pop ax
+    ret
+
+; --------------------------------------------
+; Clean exit: clear screen, restore cursor, exit to DOS
+; Properly manages stack and ensures clean return to DOS
+; --------------------------------------------
+clean_exit:
+    ; Clean exit function - restores system state and exits to DOS
+    ; Ensures all interrupts are properly restored and system is in clean state
+    ; INT 21h function 4Ch will properly restore stack and all system state
+    
+    ; Stop music (turn off speaker)
+    call stop_music
+    
+    ; Uninstall timer interrupt (music ISR)
+    cmp word [old_timer_off], 0
+    je .no_timer_cleanup
+    call uninstall_timer_isr
+.no_timer_cleanup:
+    
+    ; Uninstall any keyboard interrupt hooks (if they were installed)
+    cmp word [old_kb_off], 0
+    je .no_kb_cleanup
+    call uninstall_keyboard_isr
+.no_kb_cleanup:
+    
+    ; Clear screen to black (using BIOS)
+    mov ax, 0x0003            ; Set video mode 03h (clears screen)
+    int 0x10
+    
+    ; Restore cursor (normal cursor)
+    mov ah, 0x01
+    mov cx, 0x0607            ; Normal cursor shape
+    int 0x10
+    
+    ; Position cursor at top-left
+    mov ah, 0x02
+    mov bh, 0                 ; Page 0
+    mov dh, 0                 ; Row 0
+    mov dl, 0                 ; Column 0
+    int 0x10
+    
+    ; Exit to DOS
+    ; INT 21h function 4Ch terminates program and properly:
+    ; - Restores all interrupt vectors
+    ; - Restores stack to original state
+    ; - Frees memory
+    ; - Returns control to DOS/command prompt
+    mov ax, 0x4C00
+    int 0x21
+    ; Should never reach here, but just in case
+    ret
+
+; --------------------------------------------
+; Reset game variables to initial state
+; --------------------------------------------
+reset_game_state:
+    mov word [player_x], LANE_CENTER
+    mov word [player_y], 22
+
+    mov word [obstacle_active], 0
+    mov word [coin_active], 0
+    mov word [fuel_active], 0
+
+    mov word [obstacle_counter], 0
+    mov word [coin_counter], 0
+    mov word [fuel_counter], 0
+
+    mov word [movement_cooldown], 0  ; Reset movement cooldown
+    mov word [collision_occurred], 0 ; Reset collision flag
+    
+    mov word [fuel_level], MAX_FUEL  ; Reset fuel to maximum
+    mov word [fuel_deplete_counter], 0 ; Reset fuel depletion counter
+    mov word [random_seed], 0        ; Reset random seed
+
+    mov word [game_state], STATE_INTRO
+    mov word [confirm_shown], 0
+    mov word [confirm_from_end], 0
+    mov word [confirm_from_pregame], 0
+    mov byte [key_ready], 0
+    ret
+
+; --------------------------------------------
+; Trigger game end due to fuel depletion
+; (Call this when fuel reaches 0)
+; --------------------------------------------
+trigger_fuel_end:
+    mov word [end_cause], 1      ; 1 = fuel
+    mov word [game_state], STATE_END
+    mov word [confirm_shown], 0
+    ret
+
+; --------------------------------------------
+; Trigger collision crash (with spark effect)
+; Called when collision is detected during movement attempt
+; --------------------------------------------
+trigger_collision_crash:
+    push ax
+    
+    ; Set collision flag
+    mov word [collision_occurred], 1
+    
+    ; Draw sparks
+    call draw_sparks
+    
+    ; Show sparks for a moment (delay)
+    mov cx, 10                  ; Delay loop count
+.spark_delay:
+    push cx
+    call delay
+    pop cx
+    loop .spark_delay
+    
+    ; Trigger crash end
+    mov word [end_cause], 2      ; 2 = crash
+    mov word [game_state], STATE_END
+    mov word [confirm_shown], 0
+    
+    pop ax
+    ret
+
+; --------------------------------------------
+; Trigger game end due to collision
+; (Call this when car hits obstacle)
+; --------------------------------------------
+trigger_crash_end:
+    mov word [end_cause], 2      ; 2 = crash
+    mov word [game_state], STATE_END
+    mov word [confirm_shown], 0
+    ret
+
+; --------------------------------------------
+; Redraw full scene (background + entities + player)
+; --------------------------------------------
+redraw_scene:
+    call draw_background
+    call draw_lane_markings
+    call draw_entities
+    call draw_player_car
+    ret
+
+; --------------------------------------------
+; Clear entire screen to black
+; --------------------------------------------
+clear_screen:
+    push ax
+    push cx
+    push di
+    xor di, di
+    mov cx, SCREEN_WIDTH * SCREEN_HEIGHT   ; 80*25 = 2000 words
+    mov ax, 0x0720                         ; ' ' with white on black
+.cs_loop:
+    mov [es:di], ax
+    add di, 2
+    loop .cs_loop
+    pop di
+    pop cx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Show intro screen (inspired by previous project style)
+; --------------------------------------------
 show_intro_screen:
     call clear_screen
+
     push es
-    mov ax, 0xb800
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
+    mov ax, 0xB800
     mov es, ax
+
+    ; Draw decorative border box (row 5-19, col 20-60)
+    mov ah, BORDER_COLOR
+    mov al, 0xC9                ; Top-left corner
+    mov di, (5 * 160) + (20 * 2)
+    stosw
+    mov al, 0xCD                ; Top horizontal line
+    mov cx, 39
+.top_border:
+    stosw
+    loop .top_border
+    mov al, 0xBB                ; Top-right corner
+    stosw
     
-    mov di, (7 * 160) + (33 * 2)
+    ; Side borders
+    mov bx, 6
+.side_loop:
+    mov ah, BORDER_COLOR        ; Ensure color is set
+    mov al, 0xBA                ; Vertical line
+    push ax                     ; Save character and color
+    ; Calculate left side: (bx * 160) + (20 * 2)
+    mov ax, bx
+    mov dx, 160
+    mul dx                      ; AX = bx * 160
+    mov di, ax
+    add di, 40                  ; Add 20 * 2 = 40
+    pop ax                      ; Restore character and color
+    stosw
+    push ax                     ; Save again for right side
+    ; Calculate right side: (bx * 160) + (60 * 2)
+    mov ax, bx
+    mov dx, 160
+    mul dx                      ; AX = bx * 160
+    mov di, ax
+    add di, 120                 ; Add 60 * 2 = 120
+    pop ax                      ; Restore character and color
+    stosw
+    inc bx
+    cmp bx, 19
+    jb .side_loop
+    
+    ; Bottom border
+    mov ah, BORDER_COLOR        ; Ensure border color is set
+    mov al, 0xC8                ; Bottom-left corner
+    mov di, (19 * 160) + (20 * 2)
+    stosw
+    mov al, 0xCD                ; Bottom horizontal line
+    mov cx, 39
+.bot_border:
+    stosw
+    loop .bot_border
+    mov al, 0xBC                ; Bottom-right corner
+    stosw
+
+    ; Title: "HIGHWAY DASH" (row 7, centered in box: col 20-60, width 40, text 12 chars)
+    ; Center: 20 + (40-12)/2 = 20 + 14 = 34
+    mov di, (7 * 160) + (34 * 2)
     mov si, msg_intro1
-    mov ah, 0x0E
+    mov ah, TITLE_COLOR         ; Yellow on black
 .l1:
     lodsb
     cmp al, 0
     je .l2
     stosw
     jmp .l1
+
+    ; Decorative line under title (centered, 36 chars wide)
+    mov di, (8 * 160) + (22 * 2)
+    mov ah, BORDER_COLOR
+    mov al, 0xC4                ; Single horizontal line
+    mov cx, 36
+.title_line:
+    stosw
+    loop .title_line
+
+    ; "Developed By:" (row 10, centered: 20 + (40-13)/2 = 20 + 13 = 33)
 .l2:
-    mov di, (10 * 160) + (30 * 2)
+    mov di, (10 * 160) + (33 * 2)
     mov si, msg_intro2
-    mov ah, 0x0F
+    mov ah, HEADER_COLOR        ; Cyan on black
 .l2loop:
     lodsb
     cmp al, 0
     je .l3
     stosw
     jmp .l2loop
+
+    ; Developer name (row 12, centered: 20 + (40-12)/2 = 20 + 14 = 34)
 .l3:
-    mov di, (12 * 160) + (32 * 2)
+    mov di, (12 * 160) + (34 * 2)
     mov si, msg_intro3
-    mov ah, 0x0F
+    mov ah, PROMPT_COLOR        ; Bright white on black
 .l3loop:
     lodsb
     cmp al, 0
     je .l4
     stosw
     jmp .l3loop
+
+    ; Roll number (row 14, centered: 20 + (40-13)/2 = 20 + 13 = 33)
 .l4:
-    mov di, (16 * 160) + (28 * 2)
+    mov di, (14 * 160) + (33 * 2)
     mov si, msg_intro4
-    mov ah, 0x0A
+    mov ah, INFO_COLOR          ; Light green on black
 .l4loop:
+    lodsb
+    cmp al, 0
+    je .l5
+    stosw
+    jmp .l4loop
+
+    ; "Press any key to continue..." (row 18, centered: 20 + (40-28)/2 = 20 + 6 = 26)
+.l5:
+    mov di, (18 * 160) + (26 * 2)
+    mov si, msg_intro5
+    mov ah, HIGHLIGHT_COLOR     ; Light red on black (attention-grabbing)
+.l5loop:
     lodsb
     cmp al, 0
     je .done
     stosw
-    jmp .l4loop
+    jmp .l5loop
+
 .done:
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax
     pop es
     ret
 
-input_name_roll:
+; --------------------------------------------
+; Draw start screen (wrapper for compatibility)
+; --------------------------------------------
+draw_start_screen:
+    call show_intro_screen
+    ret
+
+; --------------------------------------------
+; Show instructions screen
+; --------------------------------------------
+show_instructions:
     call clear_screen
+
     push es
-    mov ax, 0xb800
+    push ax
+    push bx
+    push cx
+    push di
+    mov ax, 0xB800
     mov es, ax
+
+    ; Draw decorative border box (row 4-21, col 18-62)
+    mov ah, BORDER_COLOR
+    mov al, 0xC9                ; Top-left corner
+    mov di, (4 * 160) + (18 * 2)
+    stosw
+    mov al, 0xCD                ; Top horizontal line
+    mov cx, 43
+.top_border:
+    stosw
+    loop .top_border
+    mov al, 0xBB                ; Top-right corner
+    stosw
     
-    mov di, (10 * 160) + (28 * 2)
-    mov si, msg_name
-    mov ah, 0x0F
-.name_prompt:
+    ; Side borders
+    mov bx, 5
+.side_loop:
+    mov ah, BORDER_COLOR        ; Ensure color is set
+    mov al, 0xBA                ; Vertical line
+    push ax                     ; Save character and color
+    ; Calculate left side: (bx * 160) + (18 * 2)
+    mov ax, bx
+    mov dx, 160
+    mul dx                      ; AX = bx * 160
+    mov di, ax
+    add di, 36                  ; Add 18 * 2 = 36
+    pop ax                      ; Restore character and color
+    stosw
+    push ax                     ; Save again for right side
+    ; Calculate right side: (bx * 160) + (62 * 2)
+    mov ax, bx
+    mov dx, 160
+    mul dx                      ; AX = bx * 160
+    mov di, ax
+    add di, 124                 ; Add 62 * 2 = 124
+    pop ax                      ; Restore character and color
+    stosw
+    inc bx
+    cmp bx, 21
+    jb .side_loop
+    
+    ; Bottom border
+    mov ah, BORDER_COLOR        ; Ensure border color is set
+    mov al, 0xC8                ; Bottom-left corner
+    mov di, (21 * 160) + (18 * 2)
+    stosw
+    mov al, 0xCD                ; Bottom horizontal line
+    mov cx, 43
+.bot_border:
+    stosw
+    loop .bot_border
+    mov al, 0xBC                ; Bottom-right corner
+    stosw
+
+    ; Title: "INSTRUCTIONS" (row 6, centered in box: col 18-62, width 44, text 12 chars)
+    ; Center: 18 + (44-12)/2 = 18 + 16 = 34
+    mov di, (6 * 160) + (34 * 2)
+    mov si, msg_inst1
+    mov ah, TITLE_COLOR         ; Yellow on black
+.inst1:
     lodsb
     cmp al, 0
-    je .get_name
+    je .inst2
     stosw
-    jmp .name_prompt
+    jmp .inst1
+
+    ; Decorative line under title (centered, 40 chars wide)
+    mov di, (7 * 160) + (20 * 2)
+    mov ah, BORDER_COLOR
+    mov al, 0xC4                ; Single horizontal line
+    mov cx, 40
+.title_line:
+    stosw
+    loop .title_line
+
+    ; "Arrow Keys - Move car (L/R/Up/Down)" (row 9, left-aligned with padding: col 20)
+    ; Text is 33 chars, fits in 44-char box
+.inst2:
+    mov di, (9 * 160) + (20 * 2)
+    mov si, msg_inst2
+    mov ah, INFO_COLOR          ; Light green on black
+.inst2loop:
+    lodsb
+    cmp al, 0
+    je .inst3
+    stosw
+    jmp .inst2loop
+
+    ; "ESC - Pause and quit confirmation" (row 11, left-aligned: col 20)
+    ; Text is 33 chars
+.inst3:
+    mov di, (11 * 160) + (20 * 2)
+    mov si, msg_inst3
+    mov ah, INFO_COLOR          ; Light green on black
+.inst3loop:
+    lodsb
+    cmp al, 0
+    je .inst4
+    stosw
+    jmp .inst3loop
+
+    ; "Collect coins ($) to increase score" (row 13, left-aligned: col 20)
+    ; Text is 35 chars
+.inst4:
+    mov di, (13 * 160) + (20 * 2)
+    mov si, msg_inst4
+    mov ah, COIN_COLOR          ; Yellow on gray (coin-themed)
+.inst4loop:
+    lodsb
+    cmp al, 0
+    je .inst5
+    stosw
+    jmp .inst4loop
+
+    ; "Collect fuel (F) to refuel" (row 15, left-aligned: col 20)
+    ; Text is 25 chars
+.inst5:
+    mov di, (15 * 160) + (20 * 2)
+    mov si, msg_inst5
+    mov ah, FUEL_COLOR          ; Light green (fuel-themed)
+.inst5loop:
+    lodsb
+    cmp al, 0
+    je .inst6
+    stosw
+    jmp .inst5loop
+
+    ; "Avoid obstacles (cyan blocks) to survive" (row 17, left-aligned: col 20)
+    ; Text is 40 chars
+.inst6:
+    mov di, (17 * 160) + (20 * 2)
+    mov si, msg_inst6
+    mov ah, OBSTACLE_COLOR      ; Cyan (obstacle-themed)
+.inst6loop:
+    lodsb
+    cmp al, 0
+    je .inst7
+    stosw
+    jmp .inst6loop
+
+    ; "Press any key to start the game..." (row 20, centered: 18 + (44-33)/2 = 18 + 5 = 23)
+    ; Text is 33 chars
+.inst7:
+    mov di, (20 * 160) + (23 * 2)
+    mov si, msg_inst7
+    mov ah, HIGHLIGHT_COLOR     ; Light red (attention-grabbing)
+.inst7loop:
+    lodsb
+    cmp al, 0
+    je .inst_done
+    stosw
+    jmp .inst7loop
+
+.inst_done:
+    pop di
+    pop cx
+    pop bx
+    pop ax
+    pop es
+    ret
+
+; --------------------------------------------
+; Show input screen
+; --------------------------------------------
+show_input_screen:
+    call clear_screen
+
+    push es
+    push ax
+    push bx
+    push cx
+    push di
+    mov ax, 0xB800
+    mov es, ax
+
+    ; Draw decorative border box (row 5-16, col 20-60)
+    mov ah, BORDER_COLOR
+    mov al, 0xC9                ; Top-left corner
+    mov di, (5 * 160) + (20 * 2)
+    stosw
+    mov al, 0xCD                ; Top horizontal line
+    mov cx, 39
+.top_border:
+    stosw
+    loop .top_border
+    mov al, 0xBB                ; Top-right corner
+    stosw
     
-.get_name:
+    ; Side borders
+    mov bx, 6
+.side_loop:
+    mov ah, BORDER_COLOR        ; Ensure color is set
+    mov al, 0xBA                ; Vertical line
+    push ax                     ; Save character and color
+    ; Calculate left side: (bx * 160) + (20 * 2)
+    mov ax, bx
+    mov dx, 160
+    mul dx                      ; AX = bx * 160
+    mov di, ax
+    add di, 40                  ; Add 20 * 2 = 40
+    pop ax                      ; Restore character and color
+    stosw
+    push ax                     ; Save again for right side
+    ; Calculate right side: (bx * 160) + (60 * 2)
+    mov ax, bx
+    mov dx, 160
+    mul dx                      ; AX = bx * 160
+    mov di, ax
+    add di, 120                 ; Add 60 * 2 = 120
+    pop ax                      ; Restore character and color
+    stosw
+    inc bx
+    cmp bx, 16
+    jb .side_loop
+    
+    ; Bottom border
+    mov ah, BORDER_COLOR        ; Ensure border color is set
+    mov al, 0xC8                ; Bottom-left corner
+    mov di, (16 * 160) + (20 * 2)
+    stosw
+    mov al, 0xCD                ; Bottom horizontal line
+    mov cx, 39
+.bot_border:
+    stosw
+    loop .bot_border
+    mov al, 0xBC                ; Bottom-right corner
+    stosw
+
+    ; Title: "ENTER YOUR DETAILS" (row 7, centered in box: col 20-60, width 40, text 18 chars)
+    ; Center: 20 + (40-18)/2 = 20 + 11 = 31
+    mov di, (7 * 160) + (31 * 2)
+    mov si, msg_input1
+    mov ah, TITLE_COLOR         ; Yellow on black
+.input_title:
+    lodsb
+    cmp al, 0
+    je .input_name_label
+    stosw
+    jmp .input_title
+
+    ; Decorative line under title (centered, 36 chars wide)
+    mov di, (8 * 160) + (22 * 2)
+    mov ah, BORDER_COLOR
+    mov al, 0xC4                ; Single horizontal line
+    mov cx, 36
+.title_line:
+    stosw
+    loop .title_line
+
+    ; "Enter your name: " (row 10, left-aligned: col 22)
+    ; Text is 17 chars, fits in 40-char box
+.input_name_label:
+    mov di, (10 * 160) + (22 * 2)
+    mov si, msg_input_name
+    mov ah, HEADER_COLOR        ; Cyan on black
+.input_name_lbl_loop:
+    lodsb
+    cmp al, 0
+    je .input_roll_label
+    stosw
+    jmp .input_name_lbl_loop
+
+    ; "Enter your roll number: " (row 12, left-aligned: col 22)
+    ; Text is 25 chars, fits in 40-char box
+.input_roll_label:
+    mov di, (12 * 160) + (22 * 2)
+    mov si, msg_input_roll
+    mov ah, HEADER_COLOR        ; Cyan on black
+.input_roll_lbl_loop:
+    lodsb
+    cmp al, 0
+    je .input_done
+    stosw
+    jmp .input_roll_lbl_loop
+
+.input_done:
+    pop di
+    pop cx
+    pop bx
+    pop ax
+    pop es
+    ret
+
+; --------------------------------------------
+; Get a key from keyboard (returns AL=ascii, AH=scan)
+; --------------------------------------------
+get_key:
+    mov ah, 0x00
+    int 0x16
+    ret
+
+; --------------------------------------------
+; Input player name (max 19 characters)
+; --------------------------------------------
+input_player_name:
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+
+    ; Position cursor at row 10, col 40 (after "Enter your name: " which is 17 chars, starts at col 22, +1 space)
+    mov di, (10 * 160) + (40 * 2)
     mov si, player_name
-    mov cx, 0
+    mov cx, 0               ; Character count
+
 .name_loop:
     call get_key
-    cmp al, 13
+    ; Check for ESC key (scan code 0x01)
+    cmp ah, 0x01
+    je .name_esc
+    cmp al, 13              ; Enter key
     je .name_done
-    cmp al, 8
+    cmp al, 8                ; Backspace
     je .name_back
     cmp al, 'A'
     jb .name_loop
     cmp al, 'Z'+1
     jb .name_ok
+    cmp al, 'a'
+    jb .name_loop
+    cmp al, 'z'+1
+    jb .name_ok
     cmp al, ' '
     jne .name_loop
+
 .name_ok:
-    cmp cx, 19
+    cmp cx, 19              ; Max 19 characters
     jae .name_loop
     mov [si], al
     inc si
     inc cx
-    mov ah, 0x0F
+    mov ah, PROMPT_COLOR     ; Bright white on black (visible input)
     stosw
     jmp .name_loop
-    
+
 .name_back:
     cmp cx, 0
     je .name_loop
@@ -705,30 +2764,59 @@ input_name_roll:
     mov byte [si], 0
     dec cx
     sub di, 2
-    mov ax, 0x0720
+    mov ax, 0x0020           ; Space with black background
     stosw
     sub di, 2
     jmp .name_loop
-    
+
+.name_esc:
+    ; ESC pressed during name input - show confirmation
+    mov word [confirm_from_end], 0
+    mov word [confirm_from_pregame], 1  ; From pre-game state
+    mov word [game_state], STATE_CONFIRM
+    mov word [confirm_shown], 0
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
 .name_done:
-    mov di, (12 * 160) + (28 * 2)
-    mov si, msg_roll
-    mov ah, 0x0F
-.roll_prompt:
-    lodsb
-    cmp al, 0
-    je .get_roll
-    stosw
-    jmp .roll_prompt
-    
-.get_roll:
+    mov byte [si], 0        ; Null terminate
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Input player roll number (max 14 characters: letters, numbers, dash)
+; --------------------------------------------
+input_player_roll:
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+
+    ; Position cursor at row 12, col 48 (after "Enter your roll number: " which is 25 chars, starts at col 22, +1 space)
+    mov di, (12 * 160) + (48 * 2)
     mov si, player_roll
-    mov cx, 0
+    mov cx, 0               ; Character count
+
 .roll_loop:
     call get_key
-    cmp al, 13
-    je .done
-    cmp al, 8
+    ; Check for ESC key (scan code 0x01)
+    cmp ah, 0x01
+    je .roll_esc
+    cmp al, 13              ; Enter key
+    je .roll_done
+    cmp al, 8                ; Backspace
     je .roll_back
     cmp al, '0'
     jb .check_letter
@@ -742,16 +2830,17 @@ input_name_roll:
 .check_dash:
     cmp al, '-'
     jne .roll_loop
+
 .roll_ok:
-    cmp cx, 14
+    cmp cx, 14              ; Max 14 characters
     jae .roll_loop
     mov [si], al
     inc si
     inc cx
-    mov ah, 0x0F
+    mov ah, PROMPT_COLOR     ; Bright white on black (visible input)
     stosw
     jmp .roll_loop
-    
+
 .roll_back:
     cmp cx, 0
     je .roll_loop
@@ -759,1505 +2848,964 @@ input_name_roll:
     mov byte [si], 0
     dec cx
     sub di, 2
-    mov ax, 0x0720
+    mov ax, 0x0020           ; Space with black background
     stosw
     sub di, 2
     jmp .roll_loop
-    
-.done:
-    pop es
-    ret
 
-show_instructions:
-    call clear_screen
-    push es
-    mov ax, 0xb800
-    mov es, ax
-    
-    mov di, (6 * 160) + (34 * 2)
-    mov si, msg_inst1
-    mov ah, 0x0E
-.l1:
-    lodsb
-    cmp al, 0
-    je .l2
-    stosw
-    jmp .l1
-.l2:
-    mov di, (9 * 160) + (29 * 2)
-    mov si, msg_inst2
-    mov ah, 0x0F
-.l2loop:
-    lodsb
-    cmp al, 0
-    je .l3
-    stosw
-    jmp .l2loop
-.l3:
-    mov di, (11 * 160) + (29 * 2)
-    mov si, msg_inst3
-    mov ah, 0x0F
-.l3loop:
-    lodsb
-    cmp al, 0
-    je .l4
-    stosw
-    jmp .l3loop
-.l4:
-    mov di, (13 * 160) + (29 * 2)
-    mov si, msg_inst4
-    mov ah, 0x0F
-.l4loop:
-    lodsb
-    cmp al, 0
-    je .l5
-    stosw
-    jmp .l4loop
-.l5:
-    mov di, (15 * 160) + (29 * 2)
-    mov si, msg_inst5
-    mov ah, 0x0F
-.l5loop:
-    lodsb
-    cmp al, 0
-    je .l6
-    stosw
-    jmp .l5loop
-.l6:
-    mov di, (18 * 160) + (28 * 2)
-    mov si, msg_inst6
-    mov ah, 0x0A
-.l6loop:
-    lodsb
-    cmp al, 0
-    je .done
-    stosw
-    jmp .l6loop
-.done:
-    pop es
-    ret
-
-show_end_screen:
-    call clear_screen
-    push es
-    mov ax, 0xb800
-    mov es, ax
-    
-    mov di, (7 * 160) + (35 * 2)
-    mov si, msg_end1
-    mov ah, 0x0C
-.title:
-    lodsb
-    cmp al, 0
-    je .name
-    stosw
-    jmp .title
-.name:
-    mov di, (10 * 160) + (32 * 2)
-    mov si, msg_end2
-    mov ah, 0x0F
-.name_label:
-    lodsb
-    cmp al, 0
-    je .name_val
-    stosw
-    jmp .name_label
-.name_val:
-    mov si, player_name
-.name_loop:
-    lodsb
-    cmp al, 0
-    je .roll
-    mov ah, 0x0F
-    stosw
-    jmp .name_loop
-.roll:
-    mov di, (12 * 160) + (32 * 2)
-    mov si, msg_end3
-    mov ah, 0x0F
-.roll_label:
-    lodsb
-    cmp al, 0
-    je .roll_val
-    stosw
-    jmp .roll_label
-.roll_val:
-    mov si, player_roll
-.roll_loop:
-    lodsb
-    cmp al, 0
-    je .score
-    mov ah, 0x0F
-    stosw
-    jmp .roll_loop
-.score:
-    mov di, (14 * 160) + (32 * 2)
-    mov si, msg_end4
-    mov ah, 0x0F
-.score_label:
-    lodsb
-    cmp al, 0
-    je .score_val
-    stosw
-    jmp .score_label
-.score_val:
-    mov ax, [player_score]
-    call print_number
-.inst:
-    mov di, (17 * 160) + (28 * 2)
-    mov si, msg_end5
-    mov ah, 0x0A
-.inst_loop:
-    lodsb
-    cmp al, 0
-    je .done
-    stosw
-    jmp .inst_loop
-.done:
-    pop es
-    ret
-
-print_number:
-    push ax
-    push bx
-    push cx
-    push dx
-    mov bx, 10
-    mov cx, 0
-.divide:
-    xor dx, dx
-    div bx
-    push dx
-    inc cx
-    cmp ax, 0
-    jne .divide
-.print:
-    pop ax
-    add al, '0'
-    mov ah, 0x0F
-    stosw
-    loop .print
+.roll_esc:
+    ; ESC pressed during roll input - show confirmation
+    mov word [confirm_from_end], 0
+    mov word [confirm_from_pregame], 1  ; From pre-game state
+    mov word [game_state], STATE_CONFIRM
+    mov word [confirm_shown], 0
+    pop di
+    pop si
     pop dx
     pop cx
     pop bx
     pop ax
     ret
 
-; Display score on screen during gameplay
-; Uses di register - caller must set di to screen position
-display_score:
-    pusha
-    push es
-    mov ax, 0xb800
-    mov es, ax
-    ; di should be set by caller to the screen position
-    ; Display "Score: " label
-    mov si, msg_score_label
-    mov ah, 0x0F
-.display_label:
-    lodsb
-    cmp al, 0
-    je .display_value
-    stosw
-    jmp .display_label
-.display_value:
-    ; Display score value
-    mov ax, [player_score]
-    call print_number
-    pop es
-    popa
+.roll_done:
+    mov byte [si], 0        ; Null terminate
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
     ret
 
-msg_score_label: db 'Score: ', 0
+; --------------------------------------------
+; Print centered string on given row (BX=row, SI=string, AH=attr)
+; --------------------------------------------
+print_centered:
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
 
-; Display fuel bar on screen
-; di should be set by caller to the screen position
-display_fuel_bar:
-    pusha
-    push es
-    mov ax, 0xb800
-    mov es, ax
-    ; Display "Fuel: " label
-    mov si, msg_fuel_label
-    mov ah, 0x0F
-.display_label:
+    ; Save original SI (string pointer)
+    push si
+
+    ; Compute string length in CX
+    xor cx, cx
+.pc_len:
     lodsb
     cmp al, 0
-    je .display_bar
-    stosw
-    jmp .display_label
-.display_bar:
-    ; Calculate fuel bar length (0-20 characters)
-    mov al, [fuel_level]
-    mov ah, 0
-    mov bl, 5           ; 100 / 20 = 5, so each unit = 5 fuel
-    div bl              ; al = fuel_level / 5 (0-20)
-    mov cl, al          ; cl = bar length
-    mov ch, 0
-    
-    ; Determine color based on fuel level
-    mov al, [fuel_level]
-    cmp al, 50
-    jae .green_color
-    cmp al, 25
-    jae .yellow_color
-    ; Red color (fuel < 25)
-    mov ah, 0x0C        ; Red on black
-    jmp .draw_bar
-.yellow_color:
-    mov ah, 0x0E        ; Yellow on black
-    jmp .draw_bar
-.green_color:
-    mov ah, 0x0A        ; Green on black
-    
-.draw_bar:
-    ; Draw filled portion
-    mov al, 0xDB        ; Solid block character
-    mov bx, cx          ; Save length
-.draw_filled:
-    cmp cx, 0
-    je .draw_empty
-    stosw
-    dec cx
-    jmp .draw_filled
-    
-.draw_empty:
-    ; Draw empty portion (20 - filled)
-    mov cx, 20
-    sub cx, bx          ; cx = 20 - filled_length
-    cmp cx, 0
-    je .done
-    mov al, 0xB0        ; Light shade character
-    mov ah, 0x07        ; Gray on black
-.draw_empty_loop:
-    stosw
-    loop .draw_empty_loop
-    
-.done:
-    pop es
-    popa
+    je .pc_len_done
+    inc cx
+    jmp .pc_len
+.pc_len_done:
+
+    ; Restore SI to string start
+    pop si
+
+    ; Calculate centered column: (80 - length) / 2
+    mov dx, SCREEN_WIDTH
+    sub dx, cx
+    shr dx, 1
+
+    ; Call print_string_at(row=BX, col=DX, string=SI, attr=AH)
+    call print_string_at
+
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
     ret
 
-msg_fuel_label: db 'Fuel: ', 0
+; --------------------------------------------
+; Show confirm overlay
+; --------------------------------------------
+show_confirm_screen:
+    push ax
+    push bx
+    push dx
+    push si
+    push cx
+    push di
 
-show_quit_dialog:
-    pusha
-    push es
-    mov ax, 0xb800
+    ; Draw stylish confirmation box (row 10-14, col 20-60)
+    mov ax, 0xB800
     mov es, ax
     
-    ; Draw a box for the dialog (centered)
     ; Top border
-    mov di, (10 * 160) + (28 * 2)
-    mov cx, 24
-    mov ax, 0x1F20
-.top:
+    mov ah, BORDER_COLOR
+    mov al, 0xC9                ; Top-left corner
+    mov di, (10 * 160) + (20 * 2)
     stosw
-    loop .top
+    mov al, 0xCD                ; Top horizontal line
+    mov cx, 39
+.top_border:
+    stosw
+    loop .top_border
+    mov al, 0xBB                ; Top-right corner
+    stosw
     
-    ; Side borders and clear middle
+    ; Side borders and fill
     mov bx, 11
 .side_loop:
-    ; Calculate row offset: bx * 160
+    mov ah, BORDER_COLOR        ; Set border color
+    mov al, 0xBA                ; Vertical line
+    push ax                     ; Save character and color
+    ; Calculate left side: (bx * 160) + (20 * 2)
     mov ax, bx
-    mov cx, 160
-    mul cx
-    push ax              ; Save row offset
+    mov dx, 160
+    mul dx                      ; AX = bx * 160
     mov di, ax
-    ; Add column offsets
-    add di, (28 * 2)      ; Left border
-    mov word [es:di], 0x1F20
-    pop ax               ; Restore row offset
-    push ax
+    add di, 40                  ; Add 20 * 2 = 40
+    pop ax                      ; Restore character and color
+    stosw
+    ; Fill middle with black
+    push ax                     ; Save current AX
+    mov ax, bx
+    mov dx, 160
+    mul dx                      ; AX = bx * 160
     mov di, ax
-    add di, (51 * 2)      ; Right border
-    mov word [es:di], 0x1F20
-    ; Clear middle
-    pop ax               ; Restore row offset
+    add di, 42                  ; Add 21 * 2 = 42
+    pop ax                      ; Restore (but we'll overwrite it anyway)
+    mov al, ' '
+    mov ah, 0x00                ; Black background
+    mov cx, 38
+.fill_loop:
+    stosw
+    loop .fill_loop
+    mov ah, BORDER_COLOR        ; Restore border color for right side
+    mov al, 0xBA                ; Vertical line
+    push ax                     ; Save character and color
+    ; Calculate right side: (bx * 160) + (60 * 2)
+    mov ax, bx
+    mov dx, 160
+    mul dx                      ; AX = bx * 160
     mov di, ax
-    add di, (29 * 2)
-    mov cx, 22
-    mov ax, 0x1F20
-    rep stosw
+    add di, 120                 ; Add 60 * 2 = 120
+    pop ax                      ; Restore character and color
+    stosw
     inc bx
     cmp bx, 14
     jb .side_loop
     
     ; Bottom border
-    mov di, (14 * 160) + (28 * 2)
-    mov cx, 24
-    mov ax, 0x1F20
-.bot:
+    mov ah, BORDER_COLOR        ; Ensure border color is set
+    mov al, 0xC8                ; Bottom-left corner
+    mov di, (14 * 160) + (20 * 2)
     stosw
-    loop .bot
-    
-    ; Draw message
-    mov di, (11 * 160) + (30 * 2)
-    mov si, msg_quit
-    mov ah, 0x1F
-.msg:
+    mov al, 0xCD                ; Bottom horizontal line
+    mov cx, 39
+.bot_border:
+    stosw
+    loop .bot_border
+    mov al, 0xBC                ; Bottom-right corner
+    stosw
+
+    ; Compute text length
+    mov si, confirm_msg
+    xor cx, cx
+.len_calc:
     lodsb
     cmp al, 0
-    je .y_option
-    stosw
-    jmp .msg
-    
-.y_option:
-    mov di, (12 * 160) + (32 * 2)
-    mov si, msg_quit_y
-    mov ah, 0x1E
-.y_loop:
-    lodsb
-    cmp al, 0
-    je .n_option
-    stosw
-    jmp .y_loop
-    
-.n_option:
-    mov di, (13 * 160) + (32 * 2)
-    mov si, msg_quit_n
-    mov ah, 0x1E
-.n_loop:
+    je .len_done
+    inc cx
+    jmp .len_calc
+.len_done:
+
+    ; Center text in box (row 12, centered in col 20-60)
+    mov di, (12 * 160) + (20 * 2)  ; Start of box row
+    mov bx, 40                     ; Box width
+    sub bx, cx
+    shr bx, 1                      ; Center offset
+    shl bx, 1                      ; Convert to bytes
+    add di, bx
+
+    ; Write string in highlight color
+    mov si, confirm_msg
+    mov ah, HIGHLIGHT_COLOR     ; Light red for attention
+.write_str:
     lodsb
     cmp al, 0
     je .done
-    stosw
-    jmp .n_loop
-    
+    mov [es:di], ax
+    add di, 2
+    jmp .write_str
+
 .done:
-    pop es
-    popa
-    ret
-
-; [Include all game drawing functions - same as before]
-
-draw_background:
-    pusha
-    push es
-    mov ax, 0xb800
-    mov es, ax
-    cld
-    mov di, 0
-    mov bx, 25
-pass1_row_loop:
-    mov ax, 0x2AB2
-    mov cx, 20
-    rep stosw
-    mov ax, 0x7020
-    mov cx, 40
-    rep stosw
-    mov ax, 0x2AB2
-    mov cx, 20
-    rep stosw
-    dec bx
-    jnz pass1_row_loop
-    mov bx, 0
-pass2_row_loop:
-    push bx
-    mov ax, bx
-    mov cx, 160
-    mul cx
-    mov di, ax
-    test bx, 1
-    jnz skip_dash_draw
-    add di, 33 * 2
-    mov word [es:di], 0x7FDB
-    sub di, 33 * 2
-    add di, 46 * 2
-    mov word [es:di], 0x7FDB
-skip_dash_draw:
-    pop bx
-    inc bx
-    cmp bx, 25
-    jne pass2_row_loop
-    pop es
-    popa
-    ret
-
-redraw_lane_lines:
-    pusha
-    push es
-    mov ax, 0xb800
-    mov es, ax
-    mov al, dh
-    mov ah, 0
-    ; Always redraw lane lines regardless of row (removed test al, 1 check)
-    ; Optimize: 160 = 128 + 32, use shifts and adds instead of mul
-    ; row * 160 = row * 128 + row * 32 = (row << 7) + (row << 5)
-    mov di, ax
-    shl di, 7          ; di = row * 128
-    mov bx, ax
-    shl bx, 5           ; bx = row * 32
-    add di, bx          ; di = row * 160
-    ; Draw left lane marker (column 33)
-    add di, 33 * 2
-    mov word [es:di], 0x7FDB
-    ; Draw right lane marker (column 46)
-    sub di, 33 * 2
-    add di, 46 * 2
-    mov word [es:di], 0x7FDB
-.done:
-    pop es
-    popa
-    ret
-
-draw_car_at:
-    pusha
-    push es
-    push dx
-    push bx              ; Save bx (contains car color/character: 0x4CDB or 0x19DB)
-    mov ax, 0xb800
-    mov es, ax
-    mov al, dh
-    mov ah, 0
-    ; Optimize: 160 = 128 + 32, use shifts and adds
-    mov di, ax
-    shl di, 7          ; di = row * 128
-    mov cx, ax         ; Use cx instead of bx for row calculation
-    shl cx, 5           ; cx = row * 32
-    add di, cx          ; di = row * 160
-    pop bx              ; Restore bx (car color/character) - pop before dx
-    pop dx              ; Restore dx (row, col)
-    push dx             ; Save dx again for redraw_lane_lines
-    mov al, dl
-    mov ah, 0
-    shl ax, 1
-    add di, ax
-    mov ax, bx          ; Use bx (car color) for drawing
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    add di, 160 - 2
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
+    pop di
+    pop cx
+    pop si
     pop dx
-    call redraw_lane_lines
-    inc dh
-    call redraw_lane_lines
-    pop es
-    popa
-    ret
-
-erase_car_at:
-    pusha
-    push es
-    push dx
-    mov ax, 0xb800
-    mov es, ax
-    mov al, dh
-    mov ah, 0
-    ; Optimize: 160 = 128 + 32, use shifts and adds
-    mov di, ax
-    shl di, 7          ; di = row * 128
-    mov bx, ax
-    shl bx, 5           ; bx = row * 32
-    add di, bx          ; di = row * 160
-    pop dx
-    push dx
-    mov al, dl
-    mov ah, 0
-    shl ax, 1
-    add di, ax
-    mov ax, 0x7020
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    add di, 160 - 2
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    pop dx
-    call redraw_lane_lines
-    inc dh
-    call redraw_lane_lines
-    pop es
-    popa
-    ret
-
-draw_coin_at:
-    pusha
-    push es
-    push dx              ; Save dx (contains row in dh, col in dl)
-    mov ax, 0xb800
-    mov es, ax
-    pop dx               ; Restore dx with row and column
-    push dx              ; Save for column calculation
-    mov al, dh           ; Get row
-    mov ah, 0
-    ; Optimize: 160 = 128 + 32, use shifts and adds
-    mov di, ax
-    shl di, 7          ; di = row * 128
-    mov bx, ax
-    shl bx, 5           ; bx = row * 32
-    add di, bx          ; di = row * 160
-    pop dx               ; Get column value
-    mov al, dl           ; Get column
-    mov ah, 0
-    shl ax, 1            ; Multiply by 2 (each char is 2 bytes)
-    add di, ax           ; di = row_offset + (col * 2)
-    ; Draw small gold circle (single character, not 2x2)
-    ; Use bright yellow (0x0E) with circle/bullet character (0x07)
-    mov ax, 0x0E07       ; Bright yellow circle/bullet
-    mov [es:di], ax
-    pop es
-    popa
-    ret
-
-erase_coin_at:
-    pusha
-    push es
-    push dx
-    mov ax, 0xb800
-    mov es, ax
-    mov al, dh
-    mov ah, 0
-    ; Optimize: 160 = 128 + 32, use shifts and adds
-    mov di, ax
-    shl di, 7          ; di = row * 128
-    mov bx, ax
-    shl bx, 5           ; bx = row * 32
-    add di, bx          ; di = row * 160
-    pop dx
-    push dx
-    mov al, dl
-    mov ah, 0
-    shl ax, 1
-    add di, ax
-    ; Erase single character (coin is now single character, not 2x2)
-    mov ax, 0x7020      ; Gray space
-    mov [es:di], ax
-    pop dx
-    call redraw_lane_lines
-    pop es
-    popa
-    ret
-
-draw_fuel_at:
-    pusha
-    push es
-    push dx              ; Save dx (contains row in dh, col in dl)
-    mov ax, 0xb800
-    mov es, ax
-    pop dx               ; Restore dx with row and column
-    push dx              ; Save for column calculation
-    mov al, dh           ; Get row
-    mov ah, 0
-    ; Optimize: 160 = 128 + 32, use shifts and adds
-    mov di, ax
-    shl di, 7          ; di = row * 128
-    mov bx, ax
-    shl bx, 5           ; bx = row * 32
-    add di, bx          ; di = row * 160
-    pop dx               ; Get column value
-    mov al, dl           ; Get column
-    mov ah, 0
-    shl ax, 1            ; Multiply by 2 (each char is 2 bytes)
-    add di, ax           ; di = row_offset + (col * 2)
-    mov ax, 0x0C46       ; Red F symbol
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    add di, 160 - 2
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    pop es
-    popa
-    ret
-
-erase_fuel_at:
-    pusha
-    push es
-    push dx
-    mov ax, 0xb800
-    mov es, ax
-    mov al, dh
-    mov ah, 0
-    ; Optimize: 160 = 128 + 32, use shifts and adds
-    mov di, ax
-    shl di, 7          ; di = row * 128
-    mov bx, ax
-    shl bx, 5           ; bx = row * 32
-    add di, bx          ; di = row * 160
-    pop dx
-    push dx
-    mov al, dl
-    mov ah, 0
-    shl ax, 1
-    add di, ax
-    mov ax, 0x7020
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    add di, 160 - 2
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    pop dx
-    call redraw_lane_lines
-    inc dh
-    call redraw_lane_lines
-    pop es
-    popa
-    ret
-
-get_random_lane:
-    push ax
-    push bx
-    mov al, 0x00
-    out 0x70, al
-    nop
-    nop
-    in al, 0x71
-    add al, [random_seed]
-    mov bl, [frame_counter]
-    add al, bl
-    mov [random_seed], al
-    and al, 0x0F
-    xor ah, ah
-    mov bl, 3
-    div bl
-    cmp ah, 0
-    je .lane_left
-    cmp ah, 1
-    je .lane_middle
-.lane_right:
-    mov dl, LANE_RIGHT
-    jmp .done
-.lane_middle:
-    mov dl, LANE_MIDDLE
-    jmp .done
-.lane_left:
-    mov dl, LANE_LEFT
-.done:
     pop bx
     pop ax
     ret
 
-spawn_obstacle:
-    pusha
-    mov al, [obs_count]
-    cmp al, 3
-    jae .done
-    call get_random_lane
-    ; Validate that dl contains a valid lane (should be 26, 38, or 50)
-    cmp dl, LANE_LEFT
-    jb .done
-    cmp dl, LANE_RIGHT
-    ja .done
-    mov al, [obs_count]
-    mov ah, 0
-    mov si, ax
-    mov byte [obs_rows + si], 1
-    mov byte [obs_cols + si], dl    ; Explicitly store as byte
-    inc byte [obs_count]
-.done:
-    popa
-    ret
+; --------------------------------------------
+; Show ending screen (game over with cause)
+; --------------------------------------------
+show_end_screen:
+    call clear_screen
 
-spawn_coin:
-    pusha
-    mov al, [coin_count]
-    cmp al, 3
-    jae .done
-    call get_random_lane
-    ; dl now contains the lane column (26, 38, or 50)
-    mov al, [coin_count]
-    mov ah, 0
-    mov si, ax
-    mov byte [coin_rows + si], 1
-    mov byte [coin_cols + si], dl    ; Explicitly store as byte
-    inc byte [coin_count]
-.done:
-    popa
-    ret
+    push es
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
+    push si
+    mov ax, 0xB800
+    mov es, ax
 
-spawn_fuel:
-    pusha
-    mov al, [fuel_count]
-    cmp al, 2
-    jae .done
-    call get_random_lane
-    ; dl now contains the lane column (26, 38, or 50)
-    mov al, [fuel_count]
-    mov ah, 0
-    mov si, ax
-    mov byte [fuel_rows + si], 1
-    mov byte [fuel_cols + si], dl    ; Explicitly store as byte
-    inc byte [fuel_count]
-.done:
-    popa
-    ret
+    ; Draw stylish border box (rows 6-19, cols 16-64)
+    mov ah, BORDER_COLOR
+    mov al, 0xC9                ; Top-left corner
+    mov di, (6 * 160) + (16 * 2)
+    stosw
+    mov al, 0xCD                ; Top horizontal line
+    mov cx, 47
+.top_border:
+    stosw
+    loop .top_border
+    mov al, 0xBB                ; Top-right corner
+    stosw
+    
+    ; Side borders and fill
+    mov bx, 7
+.side_loop:
+    mov ah, BORDER_COLOR        ; Set border color
+    mov al, 0xBA                ; Vertical line
+    push ax                     ; Save character and color
+    ; Calculate left side: (bx * 160) + (16 * 2)
+    mov ax, bx
+    mov dx, 160
+    mul dx                      ; AX = bx * 160
+    mov di, ax
+    add di, 32                  ; Add 16 * 2 = 32
+    pop ax                      ; Restore character and color
+    stosw
+    ; Fill middle with black
+    push ax                     ; Save current AX
+    mov ax, bx
+    mov dx, 160
+    mul dx                      ; AX = bx * 160
+    mov di, ax
+    add di, 34                  ; Add 17 * 2 = 34
+    pop ax                      ; Restore (but we'll overwrite it anyway)
+    mov al, ' '
+    mov ah, 0x00                ; Black background
+    mov cx, 46
+.fill_loop:
+    stosw
+    loop .fill_loop
+    mov ah, BORDER_COLOR        ; Restore border color for right side
+    mov al, 0xBA                ; Vertical line
+    push ax                     ; Save character and color
+    ; Calculate right side: (bx * 160) + (64 * 2)
+    mov ax, bx
+    mov dx, 160
+    mul dx                      ; AX = bx * 160
+    mov di, ax
+    add di, 128                 ; Add 64 * 2 = 128
+    pop ax                      ; Restore character and color
+    stosw
+    inc bx
+    cmp bx, 19
+    jb .side_loop
+    
+    ; Bottom border
+    mov ah, BORDER_COLOR        ; Ensure border color is set
+    mov al, 0xC8                ; Bottom-left corner
+    mov di, (19 * 160) + (16 * 2)
+    stosw
+    mov al, 0xCD                ; Bottom horizontal line
+    mov cx, 47
+.bot_border:
+    stosw
+    loop .bot_border
+    mov al, 0xBC                ; Bottom-right corner
+    stosw
 
-update_obstacles:
-    pusha
-    mov si, 0
-.loop:
-    cmp si, 3
-    jae .done
-    mov al, [obs_rows + si]
+    ; Title: "GAME OVER" (row 8, centered in box: col 16-64, width 48, text 9 chars)
+    ; Center: 16 + (48-9)/2 = 16 + 19 = 35
+    mov di, (8 * 160) + (35 * 2)
+    mov si, msg_end1
+    mov ah, HIGHLIGHT_COLOR     ; Light red for dramatic effect
+.end_title:
+    lodsb
     cmp al, 0
-    je .next
-    ; Save current position before erasing
-    mov dh, al
-    mov dl, [obs_cols + si]
-    ; Validate column is valid (should be 26, 38, or 50)
-    cmp dl, 0
-    je .remove_invalid
-    cmp dl, LANE_LEFT
-    jb .remove_invalid
-    cmp dl, LANE_RIGHT
-    ja .remove_invalid
-    ; Erase at current position
-    call erase_car_at
-    ; Move obstacle down
-    inc byte [obs_rows + si]
-    mov al, [obs_rows + si]
-    ; Check if obstacle has moved off screen
-    cmp al, 24
-    ja .remove
-    ; Draw obstacle at new position
-    mov dh, al
-    mov dl, [obs_cols + si]
-    ; Validate column again before drawing
-    cmp dl, 0
-    je .remove
-    cmp dl, LANE_LEFT
-    jb .remove
-    cmp dl, LANE_RIGHT
-    ja .remove
-    mov bx, 0x19DB
-    call draw_car_at
-    jmp .next
-.remove_invalid:
-    ; Invalid obstacle - remove it
-    mov byte [obs_rows + si], 0
-    dec byte [obs_count]
-    jmp .next
-.remove:
-    ; Obstacle moved off screen - remove it
-    mov byte [obs_rows + si], 0
-    dec byte [obs_count]
-.next:
-    inc si
-    jmp .loop
-.done:
-    popa
+    je .end_cause
+    stosw
+    jmp .end_title
+
+    ; Decorative line under title (centered, 44 chars wide)
+    mov di, (9 * 160) + (18 * 2)
+    mov ah, BORDER_COLOR
+    mov al, 0xC4                ; Single horizontal line
+    mov cx, 44
+.title_line:
+    stosw
+    loop .title_line
+
+    ; Cause message (row 11, centered in box) - Enhanced
+.end_cause:
+    mov ax, [end_cause]
+    cmp ax, 0
+    je .end_quit_msg
+    cmp ax, 1
+    je .end_fuel_msg
+    ; else crash
+    mov si, msg_end_crash
+    jmp .end_calc_center
+.end_quit_msg:
+    mov si, msg_end_quit
+    jmp .end_calc_center
+.end_fuel_msg:
+    mov si, msg_end_fuel
+.end_calc_center:
+    ; Calculate string length
+    push si
+    xor cx, cx
+.end_cause_len:
+    lodsb
+    cmp al, 0
+    je .end_cause_len_done
+    inc cx
+    jmp .end_cause_len
+.end_cause_len_done:
+    pop si                      ; Restore string pointer
+    ; Center: 16 + (48 - length) / 2
+    mov ax, 48
+    sub ax, cx
+    shr ax, 1                   ; Divide by 2
+    add ax, 16                  ; Add box left
+    shl ax, 1                   ; Convert to byte offset
+    mov di, (11 * 160)
+    add di, ax                  ; DI = centered position
+    mov ah, TITLE_COLOR         ; Yellow for cause message
+.end_cause_loop:
+    lodsb
+    cmp al, 0
+    je .end_name
+    stosw
+    jmp .end_cause_loop
+
+    ; "Name: " + player name (row 13) - Enhanced
+.end_name:
+    mov di, (13 * 160) + (22 * 2)
+    mov si, msg_end_name
+    mov ah, HEADER_COLOR        ; Cyan for labels
+.end_name_label:
+    lodsb
+    cmp al, 0
+    je .end_name_val
+    stosw
+    jmp .end_name_label
+.end_name_val:
+    mov si, player_name
+.end_name_loop:
+    lodsb
+    cmp al, 0
+    je .end_roll
+    mov ah, PROMPT_COLOR        ; White for values
+    stosw
+    jmp .end_name_loop
+
+    ; "Roll No: " + player roll (row 14) - Enhanced
+.end_roll:
+    mov di, (14 * 160) + (22 * 2)
+    mov si, msg_end_roll
+    mov ah, HEADER_COLOR        ; Cyan for labels
+.end_roll_label:
+    lodsb
+    cmp al, 0
+    je .end_roll_val
+    stosw
+    jmp .end_roll_label
+.end_roll_val:
+    mov si, player_roll
+.end_roll_loop:
+    lodsb
+    cmp al, 0
+    je .end_coins
+    mov ah, PROMPT_COLOR        ; White for values
+    stosw
+    jmp .end_roll_loop
+
+    ; "Coins Collected: " + number (row 15) - Enhanced
+.end_coins:
+    mov di, (15 * 160) + (22 * 2)
+    mov si, msg_end_coins
+    mov ah, HEADER_COLOR        ; Cyan for labels
+.end_coins_label:
+    lodsb
+    cmp al, 0
+    je .end_coins_val
+    stosw
+    jmp .end_coins_label
+.end_coins_val:
+    ; Convert coins_collected (word) to string and display
+    mov ax, [coins_collected]
+    call print_number_at        ; Print number at current DI position
+    ; DI is updated by print_number_at
+
+    ; "Press SPACE to return..." (row 17, centered) - Enhanced
+.end_space:
+    mov si, msg_end_space
+    ; Calculate length
+    push si
+    xor cx, cx
+.end_space_len:
+    lodsb
+    cmp al, 0
+    je .end_space_len_done
+    inc cx
+    jmp .end_space_len
+.end_space_len_done:
+    pop si
+    ; Center: 16 + (48 - length) / 2
+    mov ax, 48
+    sub ax, cx
+    shr ax, 1
+    add ax, 16
+    shl ax, 1
+    mov di, (17 * 160)
+    add di, ax
+    mov ah, INFO_COLOR          ; Light green
+.end_space_loop:
+    lodsb
+    cmp al, 0
+    je .end_esc
+    stosw
+    jmp .end_space_loop
+
+    ; "Press ESC to exit..." (row 18, centered) - Enhanced
+.end_esc:
+    mov si, msg_end_esc
+    ; Calculate length
+    push si
+    xor cx, cx
+.end_esc_len:
+    lodsb
+    cmp al, 0
+    je .end_esc_len_done
+    inc cx
+    jmp .end_esc_len
+.end_esc_len_done:
+    pop si
+    ; Center: 16 + (48 - length) / 2
+    mov ax, 48
+    sub ax, cx
+    shr ax, 1
+    add ax, 16
+    shl ax, 1
+    mov di, (18 * 160)
+    add di, ax
+    mov ah, INFO_COLOR          ; Light green
+.end_esc_loop:
+    lodsb
+    cmp al, 0
+    je .end_done
+    stosw
+    jmp .end_esc_loop
+
+.end_done:
+    pop si
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    pop es
     ret
 
-update_coins:
-    pusha
-    mov si, 0
-.loop:
-    cmp si, 3
-    jae .done
-    mov al, [coin_rows + si]
-    cmp al, 0
-    je .next
-    mov dh, al          ; dh = coin_row
-    mov dl, [coin_cols + si]    ; dl = coin_col
-    cmp dl, 0                   ; Safety check: skip if column is 0
-    je .next
-    
-    ; Check if player collected this coin
-    mov al, [player_row]
-    mov bl, [player_col]
-    ; Check if columns match
-    cmp bl, dl
-    jne .not_collected
-    ; Check if rows overlap: coin is single character, player car is 2 rows tall
-    ; Coin should be at player_row OR player_row+1 to be collected
-    ; Save coin position before overwriting
-    push dx              ; Save coin position (dh=row, dl=col)
-    mov al, [player_row]
-    mov cl, dh          ; cl = coin_row
-    ; Check if coin_row equals player_row (top of car)
-    cmp cl, al
-    je .coin_collected
-    ; Check if coin_row equals player_row+1 (bottom of car)
-    mov dl, al
-    inc dl              ; dl = player_row + 1
-    cmp cl, dl
-    je .coin_collected
-    ; Coin not at player position
-    jmp .not_collected_restore
-    
-.coin_collected:
-    
-    ; Coin collected! Erase coin, increment score and remove coin
-    pop dx               ; Restore coin position (dh=row, dl=col) to erase it
-    call erase_coin_at   ; Erase the coin from screen
-    inc word [player_score]
-    mov byte [coin_rows + si], 0
-    dec byte [coin_count]
-    jmp .next
-    
-.not_collected_restore:
-    pop dx               ; Restore coin position (dh=row, dl=col)
-.not_collected:
-    ; Coin not collected - move it down
-    call erase_coin_at
-    inc byte [coin_rows + si]
-    mov al, [coin_rows + si]
-    cmp al, 24
-    ja .remove
-    mov dh, al
-    mov dl, [coin_cols + si]    ; Read column value again
-    cmp dl, 0                   ; Safety check: skip if column is 0
-    je .remove
-    call draw_coin_at
-    jmp .next
-.remove:
-    mov byte [coin_rows + si], 0
-    ; Don't clear coin_cols - it will be overwritten on next spawn
-    dec byte [coin_count]
-.next:
-    inc si
-    jmp .loop
-.done:
-    popa
-    ret
-
-update_fuel:
-    pusha
-    mov si, 0
-.loop:
-    cmp si, 2
-    jae .done
-    mov al, [fuel_rows + si]
-    cmp al, 0
-    je .next
-    mov dh, al          ; dh = fuel_row
-    mov dl, [fuel_cols + si]    ; dl = fuel_col
-    cmp dl, 0                   ; Safety check: skip if column is 0
-    je .next
-    
-    ; Check if player collected this fuel
-    mov al, [player_row]
-    mov bl, [player_col]
-    ; Check if columns match
-    cmp bl, dl
-    jne .not_collected
-    ; Check if rows overlap: fuel is single character, player car is 2 rows tall
-    ; Save fuel position before overwriting
-    push dx              ; Save fuel position (dh=row, dl=col)
-    mov al, [player_row]
-    mov cl, dh          ; cl = fuel_row
-    ; Check if fuel_row equals player_row (top of car)
-    cmp cl, al
-    je .fuel_collected
-    ; Check if fuel_row equals player_row+1 (bottom of car)
-    mov dl, al
-    inc dl              ; dl = player_row + 1
-    cmp cl, dl
-    je .fuel_collected
-    ; Fuel not at player position
-    jmp .not_collected_restore
-    
-.fuel_collected:
-    ; Fuel collected! Erase fuel, refill tank and remove fuel
-    pop dx               ; Restore fuel position (dh=row, dl=col) to erase it
-    call erase_fuel_at   ; Erase the fuel from screen
-    ; Refill fuel (add 30, max 100)
-    mov al, [fuel_level]
-    add al, 30
-    cmp al, 100
-    jbe .fuel_ok
-    mov al, 100
-.fuel_ok:
-    mov [fuel_level], al
-    mov byte [fuel_rows + si], 0
-    dec byte [fuel_count]
-    jmp .next
-    
-.not_collected_restore:
-    pop dx               ; Restore fuel position (dh=row, dl=col)
-.not_collected:
-    ; Fuel not collected - move it down
-    call erase_fuel_at
-    inc byte [fuel_rows + si]
-    mov al, [fuel_rows + si]
-    cmp al, 24
-    ja .remove
-    mov dh, al
-    mov dl, [fuel_cols + si]    ; Read column value again
-    cmp dl, 0                   ; Safety check: skip if column is 0
-    je .remove
-    call draw_fuel_at
-    jmp .next
-.remove:
-    mov byte [fuel_rows + si], 0
-    ; Don't clear fuel_cols - it will be overwritten on next spawn
-    dec byte [fuel_count]
-.next:
-    inc si
-    jmp .loop
-.done:
-    popa
-    ret
-
-; Redraw all visible objects to ensure they stay on screen
-redraw_all_objects:
-    pusha
-    ; Redraw all obstacles
-    mov si, 0
-.redraw_obs_loop:
-    cmp si, 3
-    jae .redraw_coins
-    mov al, [obs_rows + si]
-    cmp al, 0
-    je .next_obs_redraw
-    mov dh, al
-    mov dl, [obs_cols + si]
-    cmp dl, 0
-    je .next_obs_redraw
-    cmp dl, LANE_LEFT
-    jb .next_obs_redraw
-    cmp dl, LANE_RIGHT
-    ja .next_obs_redraw
-    mov bx, 0x19DB
-    call draw_car_at
-.next_obs_redraw:
-    inc si
-    jmp .redraw_obs_loop
-    
-.redraw_coins:
-    ; Redraw all coins
-    mov si, 0
-.redraw_coin_loop:
-    cmp si, 3
-    jae .redraw_fuel
-    mov al, [coin_rows + si]
-    cmp al, 0
-    je .next_coin_redraw
-    mov dh, al
-    mov dl, [coin_cols + si]
-    cmp dl, 0
-    je .next_coin_redraw
-    call draw_coin_at
-.next_coin_redraw:
-    inc si
-    jmp .redraw_coin_loop
-    
-.redraw_fuel:
-    ; Redraw all fuel
-    mov si, 0
-.redraw_fuel_loop:
-    cmp si, 2
-    jae .redraw_done
-    mov al, [fuel_rows + si]
-    cmp al, 0
-    je .next_fuel_redraw
-    mov dh, al
-    mov dl, [fuel_cols + si]
-    cmp dl, 0
-    je .next_fuel_redraw
-    call draw_fuel_at
-.next_fuel_redraw:
-    inc si
-    jmp .redraw_fuel_loop
-    
-.redraw_done:
-    popa
-    ret
-
-draw_player:
-    pusha
-    ; Check if position changed
-    mov al, [player_row]
-    mov bl, [player_col]
-    cmp al, [prev_player_row]
-    jne .position_changed
-    cmp bl, [prev_player_col]
-    jne .position_changed
-    
-    ; Position hasn't changed - but still redraw to ensure car is visible
-    ; (in case it was erased by background updates or other operations)
-    mov dh, [player_row]
-    mov dl, [player_col]
-    mov bx, 0x4CDB
-    call draw_car_at
-    jmp .done
-    
-.position_changed:
-    ; Erase old position first (only if it's a valid position)
-    mov dh, [prev_player_row]
-    mov dl, [prev_player_col]
-    ; Check if previous position is valid (not 0,0 which indicates first draw)
-    cmp dh, 0
-    je .skip_erase
-    cmp dl, 0
-    je .skip_erase
-    call erase_car_at
-.skip_erase:
-    
-    ; Draw new position
-    mov dh, [player_row]
-    mov dl, [player_col]
-    mov bx, 0x4CDB
-    call draw_car_at
-    
-    ; Update previous position
-    mov al, [player_row]
-    mov [prev_player_row], al
-    mov al, [player_col]
-    mov [prev_player_col], al
-    
-.done:
-    popa
-    ret
-
-; Check collision at a specific position (row in al, col in bl)
-; Returns: al = 1 if collision, 0 if no collision
-; Can be called from ISR, so uses cs: prefix for data access
-check_collision_at_position:
+; --------------------------------------------
+; Print number at current DI position (AX = number, updates DI)
+; --------------------------------------------
+print_number_at:
+    push ax
     push bx
     push cx
     push dx
     push si
-    
-    ; al = row, bl = col (parameters)
-    mov si, 0
-.check_obs_loop:
-    cmp si, 3
-    jae .no_collision
-    mov cl, [cs:obs_rows + si]
-    cmp cl, 0
-    je .next_obs
-    mov ch, [cs:obs_cols + si]
-    
-    ; Check if columns match
-    cmp bl, ch
-    jne .next_obs
-    
-    ; Check if rows overlap: |row - obs_row| <= 1
-    mov dl, al          ; dl = row
-    sub dl, cl          ; dl = row - obs_row (signed byte)
-    ; Check if difference is between -1 and 1 (inclusive)
-    cmp dl, 1
-    jg .next_obs
-    cmp dl, -1
-    jl .next_obs
-    
-    ; Collision detected
-    mov al, 1
-    jmp .done
-    
-.next_obs:
-    inc si
-    jmp .check_obs_loop
-    
-.no_collision:
-    mov al, 0
-    
-.done:
+
+    ; Convert AX to string (max 5 digits for 65535)
+    mov bx, 10
+    mov cx, 0
+    mov si, 0                  ; Will use stack to reverse digits
+
+    ; Handle zero case
+    cmp ax, 0
+    jne .pn_convert
+    mov al, '0'
+    mov ah, 0x0F
+    stosw
+    jmp .pn_done
+
+    ; Extract digits (push them on stack)
+.pn_convert:
+    xor dx, dx
+    div bx                     ; AX = quotient, DX = remainder
+    push dx                    ; Push digit (0-9)
+    inc cx
+    cmp ax, 0
+    jne .pn_convert
+
+    ; Pop digits and print them
+.pn_print:
+    pop ax
+    add al, '0'
+    mov ah, 0x0F
+    stosw
+    loop .pn_print
+
+.pn_done:
     pop si
     pop dx
     pop cx
     pop bx
+    pop ax
     ret
 
-check_collision:
-    pusha
-    mov al, [player_row]
-    mov bl, [player_col]
-    call check_collision_at_position
-    cmp al, 1
-    jne .check_done
-    
-    ; Collision detected - end the game
-    mov byte [game_over], 1
-    
-.check_done:
-    popa
-    ret
+; --------------------------------------------
+; Handle END state (show ending screen, handle SPACE/ESC)
+; --------------------------------------------
+handle_end_state:
+    ; Show ending screen once
+    cmp word [confirm_shown], 0
+    jne .poll
+    call show_end_screen
+    mov word [confirm_shown], 1
 
-show_sparks:
-    pusha
-    push es
-    mov ax, 0xb800
-    mov es, ax
-    
-    ; Draw yellow pixels (sparks) around the player car position
-    mov al, [player_row]
-    mov bl, [player_col]
-    mov ah, 0
-    
-    ; Calculate base position: row * 160 + col * 2
-    ; Save row in dx temporarily
-    mov dx, ax          ; dx = row
-    mov di, ax
-    shl di, 7          ; di = row * 128
-    mov cx, ax
-    shl cx, 5           ; cx = row * 32
-    add di, cx          ; di = row * 160
-    ; Now calculate column offset
-    mov al, bl          ; al = col
-    mov ah, 0
-    shl ax, 1           ; ax = col * 2
-    add di, ax          ; di = base position (row * 160 + col * 2)
-    
-    ; Draw sparks in a pattern around the car (2x2 car)
-    ; Top-left spark
-    mov word [es:di-2], 0xEE2A    ; Yellow asterisk
-    ; Top-right spark
-    mov word [es:di+4], 0xEE2A
-    ; Bottom-left spark
-    mov word [es:di+158], 0xEE2A
-    ; Bottom-right spark
-    mov word [es:di+164], 0xEE2A
-    ; Additional sparks around
-    mov word [es:di-164], 0xEE2A  ; Above top-left
-    mov word [es:di-160], 0xEE2A  ; Above top-right
-    mov word [es:di+6], 0xEE2A    ; Right of top-right
-    mov word [es:di+166], 0xEE2A  ; Right of bottom-right
-    mov word [es:di+322], 0xEE2A  ; Below bottom-left
-    mov word [es:di+324], 0xEE2A  ; Below bottom-right
-    
-    pop es
-    popa
-    ret
+.poll:
+    ; Poll BIOS for key
+    mov ah, 0x01
+    int 0x16
+    jz .no_key
 
-delay:
-    push cx
-    push dx
-    mov dx, 3           ; Multiple delay loops for slower game
-.delay_outer:
-    mov cx, 0xFFFF      ; Much larger delay
-.delay_inner:
-    loop .delay_inner
-    dec dx
-    jnz .delay_outer
-    pop dx
-    pop cx
-    ret
+    mov ah, 0x00
+    int 0x16                ; AL=ascii, AH=scan
 
-; ==========================================================
-; --- Main ---
-; ==========================================================
-start:
-    call hook_keyboard
-    
-    call show_intro_screen
-    call wait_space
-    
-    call input_name_roll
-    
-    call show_instructions
-    call wait_space
-    
-main_menu:
+    ; SPACE -> return to intro
+    cmp al, ' '
+    je .return_to_intro
+
+    ; ESC -> exit with confirmation
+    cmp ah, 0x01
+    je .exit_confirm
+
+    jmp .no_key
+
+.return_to_intro:
+    ; Return to intro screen
+    mov word [game_state], STATE_INTRO
+    mov word [confirm_shown], 0
     call reset_game_state
-    call draw_background
-    call draw_player
-    ; Draw score and fuel bar immediately
-    push es
+    ret
+
+.exit_confirm:
+    ; Show exit confirmation (from ending screen)
+    mov word [confirm_from_end], 1
+    mov word [game_state], STATE_CONFIRM
+    mov word [confirm_shown], 0
+    ret
+
+.no_key:
+    call delay
+    ret
+
+; --------------------------------------------
+; Start prompt
+; --------------------------------------------
+draw_start_prompt:
+    push ax
+    push bx
+    push dx
+    push si
+
+    mov bx, START_ROW
+    mov dx, START_COL
+    mov ah, PROMPT_COLOR
+    mov si, start_msg
+    call print_string_at
+
+    pop si
+    pop dx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Print zero-terminated string at (row=BX, col=DX) with attr in AH
+; --------------------------------------------
+print_string_at:
+    push ax
+    push bx
+    push dx
     push di
-    mov ax, 0xb800
-    mov es, ax
-    mov di, (0 * 160) + (0 * 2)    ; Top-left corner
-    call display_score
-    mov di, (1 * 160) + (0 * 2)    ; Second row, left corner
-    call display_fuel_bar
-    pop di
-    pop es
-    
-    push es
-    mov ax, 0xb800
-    mov es, ax
-    mov di, (12 * 160) + (28 * 2)
-    mov si, msg_main
-    mov ah, 0x0F
-.main_msg:
+    push si
+
+    mov bl, ah              ; save attribute in BL
+
+    mov ax, bx              ; row into AX
+    call calc_screen_pos    ; DI set for row/col
+    mov bx, di              ; BX = start position
+
+.ps_loop:
     lodsb
     cmp al, 0
-    je .wait_main
-    stosw
-    jmp .main_msg
-.wait_main:
-    pop es
-    
-    call wait_space
-    
-    push es
-    mov ax, 0xb800
-    mov es, ax
-    mov di, (12 * 160) + (28 * 2)
-    mov cx, 26
-    mov ax, 0x7020
-    rep stosw
-    pop es
-    
-    mov byte [game_started], 1
-    mov byte [game_animating], 0
-    
-    ; Draw score and fuel bar immediately on game start
-    push es
-    push di
-    mov ax, 0xb800
-    mov es, ax
-    mov di, (0 * 160) + (0 * 2)    ; Top-left corner
-    call display_score
-    mov di, (1 * 160) + (0 * 2)    ; Second row, left corner
-    call display_fuel_bar
-    pop di
-    pop es
+    je .ps_done
+    mov ah, bl              ; restore attribute
+    mov di, bx
+    mov [es:di], ax         ; AL char, AH attr
+    add bx, 2
+    jmp .ps_loop
 
-game_loop:
-    ; Check if game is paused
-    cmp byte [game_paused], 1
-    jne .check_animating
-    
-    ; Show quit dialog if in dialog mode
-    cmp byte [in_quit_dialog], 1
-    jne .just_paused
-    call show_quit_dialog
-    
-.pause_wait:
-    ; Wait for Y, N, or ESC
-    mov byte [kb_flag], 0
-    call delay
-    call delay
-    cmp byte [kb_flag], 0
-    je .pause_wait
-    
-    ; Only process Y/N if in quit dialog
-    cmp byte [in_quit_dialog], 1
-    jne .check_esc_resume
-    
-    mov al, [kb_char]
-    cmp al, 'Y'
-    je .to_end
-    cmp al, 'N'
-    je .resume
-    
-.check_esc_resume:
-    mov al, [kb_char]
-    cmp al, 27  ; ESC
-    je .resume
-    jmp .pause_wait
-    
-.just_paused:
-    ; Paused but not in dialog - wait for ESC to resume
-    mov byte [kb_flag], 0
-    call delay
-    call delay
-    cmp byte [kb_flag], 0
-    je game_loop
-    mov al, [kb_char]
-    cmp al, 27  ; ESC
-    je .resume
-    jmp game_loop
-    
-.to_end:
-    mov byte [game_paused], 0
-    mov byte [in_quit_dialog], 0
-    jmp end_screen
-    
-.resume:
-    mov byte [game_paused], 0
-    mov byte [in_quit_dialog], 0
-    call draw_background
-    call draw_player
-    ; Redraw all objects and UI
-    call redraw_all_objects
-    push es
-    push di
-    mov ax, 0xb800
-    mov es, ax
-    mov di, (0 * 160) + (0 * 2)    ; Top-left corner
-    call display_score
-    mov di, (1 * 160) + (0 * 2)    ; Second row, left corner
-    call display_fuel_bar
+.ps_done:
+    pop si
     pop di
-    pop es
-    jmp game_loop
-    
-.check_animating:
-    ; Draw score and fuel bar even when waiting for animation start
-    push es
-    push di
-    mov ax, 0xb800
-    mov es, ax
-    mov di, (0 * 160) + (0 * 2)    ; Top-left corner
-    call display_score
-    mov di, (1 * 160) + (0 * 2)    ; Second row, left corner
-    call display_fuel_bar
-    pop di
-    pop es
-    
-    ; Redraw all objects to ensure they stay visible
-    call redraw_all_objects
-    
-    ; Wait for any key to start animation
-    cmp byte [game_animating], 0
-    jne .running
-    ; Static screen - wait for any key
-    mov byte [kb_flag], 0
-    call delay
-    cmp byte [kb_flag], 0
-    je game_loop
-    ; Key pressed - start animation
-    mov byte [game_animating], 1
-    
-.running:
-    ; Check fuel level first - if fuel is 0, game over
-    cmp byte [fuel_level], 0
-    je .fuel_empty_check
-    
-    ; Check for collision first - if game over, end immediately
-    call check_collision
-    cmp byte [game_over], 1
-    je .game_over_detected
-    
-    ; If animation stopped (collision during movement), show sparks and end
-    cmp byte [game_animating], 0
-    je .game_over_detected
-    
-    jmp .continue_running
-    
-.fuel_empty_check:
-    ; Fuel is empty - stop animation and end game
-    mov byte [game_animating], 0
-    mov byte [game_over], 1
-    jmp .game_over_detected
-    
-.continue_running:
-    
-    inc word [frame_counter]
-    
-    ; Decrease fuel over time (every 30 frames = ~1 second)
-    inc word [fuel_timer]
-    mov ax, [fuel_timer]
-    cmp ax, 30
-    jb .check_cooldown
-    ; Reset timer and decrease fuel
-    mov word [fuel_timer], 0
-    mov al, [fuel_level]
-    cmp al, 0
-    je .fuel_empty
-    dec byte [fuel_level]
-    jmp .check_cooldown
-.fuel_empty:
-    ; Fuel is empty - stop animation
-    mov byte [game_animating], 0
-    mov byte [game_over], 1
-    jmp .game_over_detected
-    
-.check_cooldown:
-    ; Decrement lane change cooldown if active
-    cmp word [lane_change_cooldown], 0
-    je .normal_speed
-    dec word [lane_change_cooldown]
-    
-.normal_speed:
-.do_updates:
-    ; Only update game objects every 2 frames to slow down movement
-    inc word [update_counter]
-    mov ax, [update_counter]
-    and ax, 1
-    cmp ax, 0
-    jne .skip_object_updates
-    
-    ; Update obstacles, coins, and fuel
-    call update_obstacles
-    call update_coins
-    call update_fuel
-    
-.skip_object_updates:
-    ; Even when updates are skipped, redraw all visible objects to ensure they stay visible
-    ; This prevents objects from disappearing when updates are skipped
-    call redraw_all_objects
-    
-.skip_spawns:
-    ; Spawn new objects based on frame counter
-    ; Optimize: reuse frame_counter in ax, only reload when needed
-    mov ax, [frame_counter]
-    
-    ; Spawn obstacles
-    xor dx, dx
-    mov bx, [spawn_interval]
-    div bx
-    cmp dx, 0
+    pop dx
+    pop bx
+    pop ax
+    ret
+; ============================================
+; SPAWN & DRAW HELPERS
+; ============================================
+
+; --------------------------------------------
+; Spawn entities based on frame counters
+; --------------------------------------------
+spawn_entities:
+    push ax
+    push bx
+    push cx
+    push dx
+
+    ; Obstacle spawn timer
+    inc word [obstacle_counter]
+    mov ax, [obstacle_counter]
+    cmp ax, OBSTACLE_SPAWN_TICKS
+    jb .check_coin
+    mov word [obstacle_counter], 0
+    cmp word [obstacle_active], 0
     jne .check_coin
     call spawn_obstacle
-    
+
 .check_coin:
-    ; Spawn coins
-    mov ax, [frame_counter]
-    xor dx, dx
-    mov bx, 50
-    div bx
-    cmp dx, 0
+    ; Always ensure a coin is active (no waiting)
+    cmp word [coin_active], 0
     jne .check_fuel
     call spawn_coin
-    
-.check_fuel:
-    ; Spawn fuel
-    mov ax, [frame_counter]
-    xor dx, dx
-    mov bx, 60
-    div bx
-    cmp dx, 20
-    jne .skip_spawn_fuel
-    call spawn_fuel
-.skip_spawn_fuel:
-    
-.skip_updates:
-    call draw_player
-    ; Redraw all objects to ensure they stay visible (prevents stuck objects)
-    call redraw_all_objects
-    
-    ; Display score on screen (top-left corner)
-    push es
-    push di
-    mov ax, 0xb800
-    mov es, ax
-    mov di, (0 * 160) + (0 * 2)    ; Top-left corner
-    call display_score
-    pop di
-    pop es
-    
-    ; Display fuel bar on screen (below score)
-    push es
-    push di
-    mov ax, 0xb800
-    mov es, ax
-    mov di, (1 * 160) + (0 * 2)    ; Second row, left corner
-    call display_fuel_bar
-    pop di
-    pop es
-    
-    call delay
-    jmp game_loop
-    
-.game_over_detected:
-    ; Collision detected - show sparks and end the game
-    call show_sparks
-    ; Wait a bit to show the sparks
-    call delay
-    call delay
-    mov byte [game_started], 0
-    mov byte [game_animating], 0
-    jmp end_screen
 
-end_screen:
-    mov byte [game_started], 0
-    call show_end_screen
-    
-.wait_end:
-    call get_key
-    cmp al, ' '
-    je .restart
-    cmp al, 27              ; ESC
-    je .quit
-    jmp .wait_end
-    
-.restart:
-    jmp main_menu
-    
-.quit:
-    call restore_keyboard
-    mov ax, 0x4c00
-    int 0x21
+.check_fuel:
+    inc word [fuel_counter]
+    mov ax, [fuel_counter]
+    cmp ax, FUEL_SPAWN_TICKS
+    jb .done
+    mov word [fuel_counter], 0
+    cmp word [fuel_active], 0
+    jne .done
+    call spawn_fuel
+
+.done:
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Spawn a new obstacle on a random lane, bottom rows
+; --------------------------------------------
+spawn_obstacle:
+    push ax
+    push bx
+    push dx
+
+    call random_lane_center
+    mov [obstacle_x], ax
+    mov word [obstacle_y], 1                   ; start near top
+    mov word [obstacle_active], 1
+
+    pop dx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Spawn a coin on a random lane, single char
+; --------------------------------------------
+spawn_coin:
+    push ax
+    push bx
+    push dx
+    push di
+
+    call random_lane_center
+    mov [coin_x], ax
+    mov word [coin_y], 1
+    mov word [coin_active], 1
+
+    pop di
+    pop dx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Spawn a fuel pickup on a random lane, single char
+; --------------------------------------------
+spawn_fuel:
+    push ax
+    push bx
+    push dx
+    push di
+
+    call random_lane_center
+    mov [fuel_x], ax
+    mov word [fuel_y], 1
+    mov word [fuel_active], 1
+
+    pop di
+    pop dx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Draw a coin at coin_x, coin_y (single char)
+; --------------------------------------------
+draw_coin:
+    push ax
+    push bx
+    push dx
+    push di
+
+    mov bx, [coin_y]
+    mov dx, [coin_x]
+    mov ax, bx                  ; AX = row
+    call calc_screen_pos
+    mov ah, COIN_COLOR
+    mov al, '$'
+    mov [es:di], ax
+
+    pop di
+    pop dx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Draw active entities (obstacle, coin, fuel)
+; --------------------------------------------
+draw_entities:
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
+
+    ; Obstacle
+    cmp word [obstacle_active], 0
+    je .draw_coin
+    call draw_obstacle_car
+
+.draw_coin:
+    cmp word [coin_active], 0
+    je .draw_fuel
+    call draw_coin
+
+.draw_fuel:
+    cmp word [fuel_active], 0
+    je .done
+    call draw_fuel
+
+.done:
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Erase active entities (restore road background)
+; --------------------------------------------
+erase_entities:
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
+
+    ; Obstacle
+    cmp word [obstacle_active], 0
+    je .erase_coin
+    call erase_obstacle_car
+
+.erase_coin:
+    cmp word [coin_active], 0
+    je .erase_fuel
+    call erase_coin
+
+.erase_fuel:
+    cmp word [fuel_active], 0
+    je .done
+    call erase_fuel
+
+.done:
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Update entity positions (move downward)
+; --------------------------------------------
+update_entities:
+    push ax
+    push bx
+    push cx
+    push dx
+
+    ; Obstacle moves down
+    cmp word [obstacle_active], 0
+    je .u_coin
+    inc word [obstacle_y]
+    cmp word [obstacle_y], SCREEN_HEIGHT - 1
+    jb .u_coin
+    mov word [obstacle_active], 0
+
+.u_coin:
+    cmp word [coin_active], 0
+    je .u_fuel
+    inc word [coin_y]
+    cmp word [coin_y], SCREEN_HEIGHT - 1
+    jb .u_fuel
+    mov word [coin_active], 0
+
+.u_fuel:
+    cmp word [fuel_active], 0
+    je .done
+    inc word [fuel_y]
+    cmp word [fuel_y], SCREEN_HEIGHT - 1
+    jb .done
+    mov word [fuel_active], 0
+
+.done:
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Erase obstacle car (2x2) restoring road
+; --------------------------------------------
+erase_obstacle_car:
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
+
+    mov bx, [obstacle_y]
+    mov dx, [obstacle_x]
+    dec dx
+
+    ; Row 1
+    mov ax, bx
+    dec ax
+    call calc_screen_pos
+    mov ah, ROAD_COLOR
+    mov al, ' '
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+
+    ; Row 2
+    mov ax, bx
+    call calc_screen_pos
+    mov ah, ROAD_COLOR
+    mov al, ' '
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Erase coin (single char)
+; --------------------------------------------
+erase_coin:
+    push ax
+    push bx
+    push dx
+    push di
+
+    mov bx, [coin_y]
+    mov dx, [coin_x]
+    mov ax, bx                  ; AX = row
+    call calc_screen_pos
+    mov ah, ROAD_COLOR
+    mov al, ' '
+    mov [es:di], ax
+
+    pop di
+    pop dx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Erase fuel (single char)
+; --------------------------------------------
+erase_fuel:
+    push ax
+    push bx
+    push dx
+    push di
+
+    mov bx, [fuel_y]
+    mov dx, [fuel_x]
+    mov ax, bx                  ; AX = row
+    call calc_screen_pos
+    mov ah, ROAD_COLOR
+    mov al, ' '
+    mov [es:di], ax
+
+    pop di
+    pop dx
+    pop bx
+    pop ax
+    ret
+
+; --------------------------------------------
+; Draw a fuel pickup at fuel_x, fuel_y (single char)
+; --------------------------------------------
+draw_fuel:
+    push ax
+    push bx
+    push dx
+    push di
+
+    mov bx, [fuel_y]
+    mov dx, [fuel_x]
+    mov ax, bx                  ; AX = row
+    call calc_screen_pos
+    mov ah, FUEL_COLOR
+    mov al, 'F'
+    mov [es:di], ax
+
+    pop di
+    pop dx
+    pop bx
+    pop ax
+    ret
