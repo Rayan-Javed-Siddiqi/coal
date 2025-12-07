@@ -1,166 +1,354 @@
-# Car-Game
-# My third semester COAL project. A car game made using Assembly Language
 [org 0x0100]
-
-    jmp main    ; Jump to main program logic
-
-; ==========================================================
-; --- Subroutines / Procedures ---
-; ==========================================================
-
-; ----------------------------------------------------------
-; draw_background: Fills screen with grass, road, and dashes
-; ----------------------------------------------------------
+    jmp main
+PLAYER_ROW equ 20
+LANE_1_COL equ 29
+LANE_2_COL equ 49
+DASH_1_COL equ 33
+DASH_2_COL equ 46
+frame_counter: dw 0
+dash_counter: dw 0
+obstacle_spawn_counter: dw 0
+score: dw 0
+game_over: dw 0
 draw_background:
     pusha
-    cld                     ; Clear direction flag (for 'rep stosw')
-
-    ; --- Pass 1: Draw Grass and Road ---
-    mov di, 0               ; Start at 0xb800:0000
-    mov bx, 25              ; Outer loop (25 rows)
+    cld
+    mov di, 0
+    mov bx, 25
 pass1_row_loop:
-    mov ax, 0xAAB2          ; Set 'paint' to GRASS
+    mov ax, 0xAAB2
     mov cx, 20
-    rep stosw               ; Draw 20 cells of grass
-    
-    mov ax, 0x7020          ; Set 'paint' to ROAD
+    rep stosw
+    mov ax, 0x7020
     mov cx, 40
-    rep stosw               ; Draw 40 cells of road
-    
-    mov ax, 0xAAB2          ; Set 'paint' to GRASS
+    rep stosw
+    mov ax, 0xAAB2
     mov cx, 20
-    rep stosw               ; Draw 20 cells of grass
-    
+    rep stosw
     dec bx
     jnz pass1_row_loop
-
-    ; --- Pass 2: Draw Dashed Lines ---
-    mov bx, 0               ; BX = row counter (0-24)
-    mov di, 0               ; DI = memory offset for start of row
+    mov bx, 0
+    mov di, 0
 pass2_row_loop:
-    mov bp, di              ; Save start-of-row address
-    
-    test bx, 1              ; Check if row is odd
-    jnz skip_dash_draw      ; If odd, skip drawing
-    
-    ; Draw Dash 1
-    add di, 33 * 2          ; DI = row_start + (col 33 * 2)
+    mov bp, di
+    test bx, 1
+    jnz skip_dash_draw
+    add di, DASH_1_COL * 2
     mov ax, 0x7FDB
     mov [es:di], ax
-    mov di, bp              ; Restore start-of-row address
-    
-    ; Draw Dash 2
-    add di, 46 * 2          ; DI = row_start + (col 46 * 2)
+    mov di, bp
+    add di, DASH_2_COL * 2
     mov ax, 0x7FDB
     mov [es:di], ax
-
 skip_dash_draw:
-    mov di, bp              ; Restore start-of-row address
-    add di, 160             ; Move DI to the start of the next row
+    mov di, bp
+    add di, 160
     inc bx
     cmp bx, 25
     jne pass2_row_loop
-    
     popa
     ret
-
-; ----------------------------------------------------------
-; place_player_car: Draws the red car at a fixed spot.
-; ----------------------------------------------------------
-place_player_car:
-    mov dh, 20              ; Set row
-    mov dl, 45              ; Set col (LANE_2_COL)
-    mov bx, 0x7CDB          ; PLAYER_CAR_PAINT
-    call draw_car_at
+clear_player_car:
+    pusha
+    mov di, PLAYER_ROW * 160 + LANE_2_COL * 2
+    mov ax, 0x7020
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    add di, 160 - 2
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    popa
     ret
-
-; ----------------------------------------------------------
-; place_obstacle_car: Draws the blue car at a random spot.
-; ----------------------------------------------------------
-place_obstacle_car:
-    mov ah, 0
-    int 1Ah                 ; Get system timer
-    mov ax, dx
-    push ax
-    
-    ; Calculate random row (1-10)
-    xor dx, dx
-    mov bx, 10
-    div bx
-    inc dl
-    mov dh, dl
-    
-    ; Calculate random lane (col 27 or 45)
-    pop ax
+place_player_car:
+    pusha
+    mov di, PLAYER_ROW * 160 + LANE_2_COL * 2
+    mov ax, 0x7CDB
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    add di, 160 - 2
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    popa
+    ret
+scroll_screen_up:
+    pusha
+    push es
+    push ds
+    mov ax, 0xb800
+    mov es, ax
+    mov ds, ax
+    mov si, 160
+    mov di, 0
+    mov cx, 24 * 80
+    cld
+    rep movsw
+    pop ds
+    pop es
+    popa
+    ret
+draw_bottom_row:
+    pusha
+    cld
+    mov di, 24 * 160
+    mov ax, 0xAAB2
+    mov cx, 20
+    rep stosw
+    mov ax, 0x7020
+    mov cx, 40
+    rep stosw
+    mov ax, 0xAAB2
+    mov cx, 20
+    rep stosw
+    mov di, 24 * 160
+    mov ax, [dash_counter]
     test ax, 1
+    jnz skip_bottom_dash
+    add di, DASH_1_COL * 2
+    mov ax, 0x7FDB
+    mov [es:di], ax
+    mov di, 24 * 160
+    add di, DASH_2_COL * 2
+    mov ax, 0x7FDB
+    mov [es:di], ax
+skip_bottom_dash:
+    inc word [dash_counter]
+    popa
+    ret
+get_rtc_second:
+    mov al, 0x00
+    out 0x70, al
+    jmp $+2
+    in al, 0x71
+    mov bl, al
+    and al, 0x0F
+    mov cl, al
+    mov al, bl
+    shr al, 4
+    mov ah, 0
+    mov bl, 10
+    mul bl
+    add al, cl
+    ret
+place_obstacle_car:
+    pusha
+    call get_rtc_second
+    mov ah, 0
+    test al, 1
     jnz .use_lane_2
-    
 .use_lane_1:
-    mov dl, 27              ; LANE_1_COL
+    mov dl, LANE_1_COL
     jmp .draw
 .use_lane_2:
-    mov dl, 45              ; LANE_2_COL
+    mov dl, LANE_2_COL
 .draw:
-    mov bx, 0x79DB          ; OBSTACLE_CAR_PAINT
-    call draw_car_at
-    ret
-
-; ----------------------------------------------------------
-; draw_car_at: Generic 2x2 car drawing routine.
-; ----------------------------------------------------------
-draw_car_at:
-    pusha
-    push dx                 ; Save row/col (DX) before 'mul'
-    
-    ; Calculate DI: DI = (row * 160) + (col * 2)
-    mov al, dh
-    mov ah, 0
-    mov cx, 160
-    mul cx                  ; ax = (row * 160). DX is overwritten.
-    mov di, ax
-    
-    pop dx                  ; Restore original row/col
-    
+    mov di, 0
     mov al, dl
     mov ah, 0
-    shl ax, 1               ; ax = col * 2
-    add di, ax              ; di = (row * 160) + (col * 2)
-    
-    ; Draw car
-    mov ax, bx
+    shl ax, 1
+    add di, ax
+    mov ax, 0x79DB
     mov [es:di], ax
     add di, 2
     mov [es:di], ax
-    
-    add di, 160 - 2         ; Move to next row, left position
-    
+    add di, 160 - 2
     mov [es:di], ax
     add di, 2
     mov [es:di], ax
-    
     popa
     ret
-
-; ----------------------------------------------------------
-; wait_for_key: Pauses execution until any key is pressed.
-; ----------------------------------------------------------
-wait_for_key:
+place_coin:
+    pusha
+    call get_rtc_second
     mov ah, 0
-    int 16h
+    test al, 1
+    jnz .coin_lane_2
+.coin_lane_1:
+    mov dl, LANE_1_COL
+    jmp .draw_coin
+.coin_lane_2:
+    mov dl, LANE_2_COL
+.draw_coin:
+    mov di, 0
+    mov al, dl
+    mov ah, 0
+    shl ax, 1
+    add di, ax
+    mov ax, 0x0E24
+    mov [es:di], ax
+    popa
     ret
-
-; ==========================================================
-; --- Main Program Execution ---
-; ==========================================================
+place_fuel:
+    pusha
+    call get_rtc_second
+    mov ah, 0
+    test al, 1
+    jnz .fuel_lane_2
+.fuel_lane_1:
+    mov dl, LANE_1_COL
+    jmp .draw_fuel
+.fuel_lane_2:
+    mov dl, LANE_2_COL
+.draw_fuel:
+    mov di, 0
+    mov al, dl
+    mov ah, 0
+    shl ax, 1
+    add di, ax
+    mov ax, 0x0A46
+    mov [es:di], ax
+    popa
+    ret
+check_collision:
+    pusha
+    mov di, PLAYER_ROW * 160 + LANE_2_COL * 2
+    mov ax, [es:di]
+    cmp ax, 0x79DB
+    je .obstacle_collision
+    cmp ax, 0x0E24
+    je .coin_collision
+    cmp ax, 0x0A46
+    je .fuel_collision
+    add di, 2
+    mov ax, [es:di]
+    cmp ax, 0x79DB
+    je .obstacle_collision
+    cmp ax, 0x0E24
+    je .coin_collision
+    cmp ax, 0x0A46
+    je .fuel_collision
+    add di, 160 - 2
+    mov ax, [es:di]
+    cmp ax, 0x79DB
+    je .obstacle_collision
+    cmp ax, 0x0E24
+    je .coin_collision
+    cmp ax, 0x0A46
+    je .fuel_collision
+    add di, 2
+    mov ax, [es:di]
+    cmp ax, 0x79DB
+    je .obstacle_collision
+    cmp ax, 0x0E24
+    je .coin_collision
+    cmp ax, 0x0A46
+    je .fuel_collision
+    mov al, 0
+    jmp .collision_done
+.obstacle_collision:
+    mov al, 1
+    jmp .collision_done
+.coin_collision:
+    mov al, 2
+    jmp .collision_done
+.fuel_collision:
+    mov al, 3
+    jmp .collision_done
+.collision_done:
+    mov [collision_result], al
+    popa
+    mov al, [collision_result]
+    ret
+collision_result: db 0
+delay:
+    pusha
+    mov cx, 0x0FFF
+delay_loop:
+    push cx
+    mov cx, 0x00FF
+delay_inner:
+    loop delay_inner
+    pop cx
+    loop delay_loop
+    popa
+    ret
 main:
-    mov ax, 0xb800          ; Set ES to video memory
+    mov ax, 0xb800
     mov es, ax
-
     call draw_background
-    call place_obstacle_car
     call place_player_car
-    call wait_for_key
-
+    mov word [frame_counter], 0
+    mov word [dash_counter], 0
+    mov word [obstacle_spawn_counter], 0
+game_loop:
+    mov ah, 0x01
+    int 0x16
+    jnz exit
+    call clear_player_car
+    call scroll_screen_up
+    call draw_bottom_row
+    inc word [frame_counter]
+    inc word [obstacle_spawn_counter]
+    mov ax, [obstacle_spawn_counter]
+    mov bx, 50
+    xor dx, dx
+    div bx
+    cmp dx, 0
+    jne skip_obstacle_spawn
+    call place_obstacle_car
+skip_obstacle_spawn:
+    mov ax, [frame_counter]
+    mov bl, 15
+    xor ah, ah
+    div bl
+    cmp ah, 0
+    jne skip_coin
+    call place_coin
+skip_coin:
+    mov ax, [frame_counter]
+    mov bl, 20
+    xor ah, ah
+    div bl
+    cmp ah, 0
+    jne skip_fuel
+    call place_fuel
+skip_fuel:
+    call check_collision
+    cmp al, 0
+    je .no_collision
+    cmp al, 1
+    je .game_over_collision
+    cmp al, 2
+    je .coin_collected
+    cmp al, 3
+    je .fuel_collected
+.no_collision:
+    call place_player_car
+.continue_loop:
+    call delay
+    jmp game_loop
+.game_over_collision:
+    jmp exit
+.coin_collected:
+    mov di, PLAYER_ROW * 160 + LANE_2_COL * 2
+    mov ax, 0x7020
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    add di, 160 - 2
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    inc word [score]
+    call place_player_car
+    jmp .continue_loop
+.fuel_collected:
+    mov di, PLAYER_ROW * 160 + LANE_2_COL * 2
+    mov ax, 0x7020
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    add di, 160 - 2
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    call place_player_car
+    jmp .continue_loop
 exit:
+    mov ah, 0
+    int 0x16
     mov ax, 0x4c00
     int 0x21
