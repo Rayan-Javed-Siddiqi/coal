@@ -1,0 +1,166 @@
+# Car-Game
+# My third semester COAL project. A car game made using Assembly Language
+[org 0x0100]
+
+    jmp main    ; Jump to main program logic
+
+; ==========================================================
+; --- Subroutines / Procedures ---
+; ==========================================================
+
+; ----------------------------------------------------------
+; draw_background: Fills screen with grass, road, and dashes
+; ----------------------------------------------------------
+draw_background:
+    pusha
+    cld                     ; Clear direction flag (for 'rep stosw')
+
+    ; --- Pass 1: Draw Grass and Road ---
+    mov di, 0               ; Start at 0xb800:0000
+    mov bx, 25              ; Outer loop (25 rows)
+pass1_row_loop:
+    mov ax, 0xAAB2          ; Set 'paint' to GRASS
+    mov cx, 20
+    rep stosw               ; Draw 20 cells of grass
+    
+    mov ax, 0x7020          ; Set 'paint' to ROAD
+    mov cx, 40
+    rep stosw               ; Draw 40 cells of road
+    
+    mov ax, 0xAAB2          ; Set 'paint' to GRASS
+    mov cx, 20
+    rep stosw               ; Draw 20 cells of grass
+    
+    dec bx
+    jnz pass1_row_loop
+
+    ; --- Pass 2: Draw Dashed Lines ---
+    mov bx, 0               ; BX = row counter (0-24)
+    mov di, 0               ; DI = memory offset for start of row
+pass2_row_loop:
+    mov bp, di              ; Save start-of-row address
+    
+    test bx, 1              ; Check if row is odd
+    jnz skip_dash_draw      ; If odd, skip drawing
+    
+    ; Draw Dash 1
+    add di, 33 * 2          ; DI = row_start + (col 33 * 2)
+    mov ax, 0x7FDB
+    mov [es:di], ax
+    mov di, bp              ; Restore start-of-row address
+    
+    ; Draw Dash 2
+    add di, 46 * 2          ; DI = row_start + (col 46 * 2)
+    mov ax, 0x7FDB
+    mov [es:di], ax
+
+skip_dash_draw:
+    mov di, bp              ; Restore start-of-row address
+    add di, 160             ; Move DI to the start of the next row
+    inc bx
+    cmp bx, 25
+    jne pass2_row_loop
+    
+    popa
+    ret
+
+; ----------------------------------------------------------
+; place_player_car: Draws the red car at a fixed spot.
+; ----------------------------------------------------------
+place_player_car:
+    mov dh, 20              ; Set row
+    mov dl, 45              ; Set col (LANE_2_COL)
+    mov bx, 0x7CDB          ; PLAYER_CAR_PAINT
+    call draw_car_at
+    ret
+
+; ----------------------------------------------------------
+; place_obstacle_car: Draws the blue car at a random spot.
+; ----------------------------------------------------------
+place_obstacle_car:
+    mov ah, 0
+    int 1Ah                 ; Get system timer
+    mov ax, dx
+    push ax
+    
+    ; Calculate random row (1-10)
+    xor dx, dx
+    mov bx, 10
+    div bx
+    inc dl
+    mov dh, dl
+    
+    ; Calculate random lane (col 27 or 45)
+    pop ax
+    test ax, 1
+    jnz .use_lane_2
+    
+.use_lane_1:
+    mov dl, 27              ; LANE_1_COL
+    jmp .draw
+.use_lane_2:
+    mov dl, 45              ; LANE_2_COL
+.draw:
+    mov bx, 0x79DB          ; OBSTACLE_CAR_PAINT
+    call draw_car_at
+    ret
+
+; ----------------------------------------------------------
+; draw_car_at: Generic 2x2 car drawing routine.
+; ----------------------------------------------------------
+draw_car_at:
+    pusha
+    push dx                 ; Save row/col (DX) before 'mul'
+    
+    ; Calculate DI: DI = (row * 160) + (col * 2)
+    mov al, dh
+    mov ah, 0
+    mov cx, 160
+    mul cx                  ; ax = (row * 160). DX is overwritten.
+    mov di, ax
+    
+    pop dx                  ; Restore original row/col
+    
+    mov al, dl
+    mov ah, 0
+    shl ax, 1               ; ax = col * 2
+    add di, ax              ; di = (row * 160) + (col * 2)
+    
+    ; Draw car
+    mov ax, bx
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    
+    add di, 160 - 2         ; Move to next row, left position
+    
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    
+    popa
+    ret
+
+; ----------------------------------------------------------
+; wait_for_key: Pauses execution until any key is pressed.
+; ----------------------------------------------------------
+wait_for_key:
+    mov ah, 0
+    int 16h
+    ret
+
+; ==========================================================
+; --- Main Program Execution ---
+; ==========================================================
+main:
+    mov ax, 0xb800          ; Set ES to video memory
+    mov es, ax
+
+    call draw_background
+    call place_obstacle_car
+    call place_player_car
+    call wait_for_key
+
+exit:
+    mov ax, 0x4c00
+    int 0x21
