@@ -1,354 +1,1707 @@
 [org 0x0100]
-    jmp main
-PLAYER_ROW equ 20
-LANE_1_COL equ 29
-LANE_2_COL equ 49
-DASH_1_COL equ 33
-DASH_2_COL equ 46
-frame_counter: dw 0
-dash_counter: dw 0
-obstacle_spawn_counter: dw 0
-score: dw 0
-game_over: dw 0
+
+jmp start
+
+; ==========================================================
+; --- Data Section ---
+; ==========================================================
+
+player_row:     db 20
+player_col:     db 38
+prev_player_row: db 20
+prev_player_col: db 38
+
+LANE_LEFT       equ 26
+LANE_MIDDLE     equ 38
+LANE_RIGHT      equ 50
+
+obs_count:      db 0
+obs_rows:       db 0, 0, 0
+obs_cols:       db 0, 0, 0
+
+coin_count:     db 0
+coin_rows:      db 0, 0, 0
+coin_cols:      db 0, 0, 0
+
+fuel_count:     db 0
+fuel_rows:      db 0, 0
+fuel_cols:      db 0, 0
+
+frame_counter:  dw 0
+spawn_interval: dw 30      ; Time constant: obstacles spawn every 30 frames
+update_counter: dw 0
+random_seed:    db 7
+
+game_started:   db 0
+game_paused:    db 0
+game_animating: db 0
+in_quit_dialog: db 0
+game_over:      db 0
+slowdown_frames: dw 0
+old_kb_isr:     dd 0
+
+player_score:   dw 0
+player_name:    times 20 db 0
+player_roll:    times 15 db 0
+
+; Keyboard buffer
+kb_scan:        db 0
+kb_char:        db 0
+kb_flag:        db 0
+
+; Messages
+msg_intro1:     db 'HIGHWAY RACER', 0
+msg_intro2:     db 'Developer: Your Name', 0
+msg_intro3:     db 'Roll No: 22L-XXXX', 0
+msg_intro4:     db 'Press SPACE to continue', 0
+
+msg_name:       db 'Enter your name: ', 0
+msg_roll:       db 'Enter roll number: ', 0
+
+msg_inst1:      db 'INSTRUCTIONS', 0
+msg_inst2:      db 'Arrow Keys - Move car', 0
+msg_inst3:      db 'Coins - Increase score', 0
+msg_inst4:      db 'Fuel - Keep tank full', 0
+msg_inst5:      db 'ESC - Pause/Quit', 0
+msg_inst6:      db 'Press SPACE to continue', 0
+
+msg_main:       db 'Press SPACE to start game', 0
+msg_quit:       db 'Do you want to quit?', 0
+msg_quit_y:     db 'Y - Yes', 0
+msg_quit_n:     db 'N - No', 0
+
+msg_end1:       db 'GAME OVER', 0
+msg_end2:       db 'Name: ', 0
+msg_end3:       db 'Roll: ', 0
+msg_end4:       db 'Score: ', 0
+msg_end5:       db 'SPACE-Main Menu ESC-Quit', 0
+
+; ==========================================================
+; --- Software Interrupt Handler for Quit Dialog ---
+; ==========================================================
+quit_dialog_isr:
+    pusha
+    push es
+    call show_quit_dialog
+    pop es
+    popa
+    iret
+
+; ==========================================================
+; --- Keyboard ISR ---
+; ==========================================================
+keyboard_isr:
+    push ax
+    push bx
+    
+    in al, 0x60
+    mov [cs:kb_scan], al
+    
+    ; Check if key release (bit 7 set)
+    test al, 0x80
+    jnz .key_release
+    
+    ; Convert scan code to ASCII
+    mov byte [cs:kb_char], 0
+    
+    ; Check specific keys
+    cmp al, 0x01            ; ESC
+    jne .not_esc
+    mov byte [cs:kb_char], 27
+    jmp .set_flag
+    
+.not_esc:
+    cmp al, 0x39            ; Space
+    jne .not_space
+    mov byte [cs:kb_char], ' '
+    jmp .set_flag
+    
+.not_space:
+    cmp al, 0x1C            ; Enter
+    jne .not_enter
+    mov byte [cs:kb_char], 13
+    jmp .set_flag
+    
+.not_enter:
+    cmp al, 0x0E            ; Backspace
+    jne .not_back
+    mov byte [cs:kb_char], 8
+    jmp .set_flag
+    
+.not_back:
+    cmp al, 0x0C            ; Dash
+    jne .not_dash
+    mov byte [cs:kb_char], '-'
+    jmp .set_flag
+    
+.not_dash:
+    ; Number row 1-0
+    cmp al, 0x02
+    jb .check_qwerty
+    cmp al, 0x0B
+    ja .check_qwerty
+    sub al, 0x02
+    cmp al, 8
+    jne .num_ok
+    mov al, 9
+    jmp .num_set
+.num_ok:
+    cmp al, 9
+    jne .num_set
+    mov al, -1
+.num_set:
+    inc al
+    add al, '0'
+    mov [cs:kb_char], al
+    jmp .set_flag
+    
+.check_qwerty:
+    mov al, [cs:kb_scan]
+    cmp al, 0x10
+    jne .not_q
+    mov byte [cs:kb_char], 'Q'
+    jmp .set_flag
+.not_q:
+    cmp al, 0x11
+    jne .not_w
+    mov byte [cs:kb_char], 'W'
+    jmp .set_flag
+.not_w:
+    cmp al, 0x12
+    jne .not_e
+    mov byte [cs:kb_char], 'E'
+    jmp .set_flag
+.not_e:
+    cmp al, 0x13
+    jne .not_r
+    mov byte [cs:kb_char], 'R'
+    jmp .set_flag
+.not_r:
+    cmp al, 0x14
+    jne .not_t
+    mov byte [cs:kb_char], 'T'
+    jmp .set_flag
+.not_t:
+    cmp al, 0x15
+    jne .not_y
+    mov byte [cs:kb_char], 'Y'
+    jmp .set_flag
+.not_y:
+    cmp al, 0x16
+    jne .not_u
+    mov byte [cs:kb_char], 'U'
+    jmp .set_flag
+.not_u:
+    cmp al, 0x17
+    jne .not_i
+    mov byte [cs:kb_char], 'I'
+    jmp .set_flag
+.not_i:
+    cmp al, 0x18
+    jne .not_o
+    mov byte [cs:kb_char], 'O'
+    jmp .set_flag
+.not_o:
+    cmp al, 0x19
+    jne .check_asdf
+    mov byte [cs:kb_char], 'P'
+    jmp .set_flag
+    
+.check_asdf:
+    mov al, [cs:kb_scan]
+    cmp al, 0x1E
+    jne .not_a
+    mov byte [cs:kb_char], 'A'
+    jmp .set_flag
+.not_a:
+    cmp al, 0x1F
+    jne .not_s
+    mov byte [cs:kb_char], 'S'
+    jmp .set_flag
+.not_s:
+    cmp al, 0x20
+    jne .not_d
+    mov byte [cs:kb_char], 'D'
+    jmp .set_flag
+.not_d:
+    cmp al, 0x21
+    jne .not_f
+    mov byte [cs:kb_char], 'F'
+    jmp .set_flag
+.not_f:
+    cmp al, 0x22
+    jne .not_g
+    mov byte [cs:kb_char], 'G'
+    jmp .set_flag
+.not_g:
+    cmp al, 0x23
+    jne .not_h
+    mov byte [cs:kb_char], 'H'
+    jmp .set_flag
+.not_h:
+    cmp al, 0x24
+    jne .not_j
+    mov byte [cs:kb_char], 'J'
+    jmp .set_flag
+.not_j:
+    cmp al, 0x25
+    jne .not_k
+    mov byte [cs:kb_char], 'K'
+    jmp .set_flag
+.not_k:
+    cmp al, 0x26
+    jne .check_zxcv
+    mov byte [cs:kb_char], 'L'
+    jmp .set_flag
+    
+.check_zxcv:
+    mov al, [cs:kb_scan]
+    cmp al, 0x2C
+    jne .not_z
+    mov byte [cs:kb_char], 'Z'
+    jmp .set_flag
+.not_z:
+    cmp al, 0x2D
+    jne .not_x
+    mov byte [cs:kb_char], 'X'
+    jmp .set_flag
+.not_x:
+    cmp al, 0x2E
+    jne .not_c
+    mov byte [cs:kb_char], 'C'
+    jmp .set_flag
+.not_c:
+    cmp al, 0x2F
+    jne .not_v
+    mov byte [cs:kb_char], 'V'
+    jmp .set_flag
+.not_v:
+    cmp al, 0x30
+    jne .not_b
+    mov byte [cs:kb_char], 'B'
+    jmp .set_flag
+.not_b:
+    cmp al, 0x31
+    jne .not_n
+    mov byte [cs:kb_char], 'N'
+    jmp .set_flag
+.not_n:
+    cmp al, 0x32
+    jne .set_flag
+    mov byte [cs:kb_char], 'M'
+    
+.set_flag:
+    mov byte [cs:kb_flag], 1
+    
+    ; Game controls
+    cmp byte [cs:game_started], 0
+    je .check_start_key
+    
+    ; If in quit dialog, only handle Y/N and ESC
+    cmp byte [cs:in_quit_dialog], 1
+    je .handle_quit_dialog
+    
+    ; If paused, only handle ESC to resume
+    cmp byte [cs:game_paused], 1
+    je .handle_paused
+    
+    ; Normal game controls
+    mov al, [cs:kb_scan]
+    cmp al, 0x01
+    je .handle_esc
+    cmp al, 0x48
+    je .move_up
+    cmp al, 0x50
+    je .move_down
+    cmp al, 0x4B
+    je .move_left
+    cmp al, 0x4D
+    je .move_right
+    jmp .done
+    
+.check_start_key:
+    ; Check if any key pressed to start animation
+    mov al, [cs:kb_scan]
+    cmp al, 0x80
+    jae .done
+    mov byte [cs:game_animating], 1
+    jmp .done
+    
+.handle_paused:
+    mov al, [cs:kb_scan]
+    cmp al, 0x01
+    jne .done
+    ; ESC pressed while paused - resume
+    mov byte [cs:game_paused], 0
+    mov byte [cs:in_quit_dialog], 0
+    jmp .done
+    
+.handle_quit_dialog:
+    ; In quit dialog - only process ESC, Y, N
+    mov al, [cs:kb_scan]
+    cmp al, 0x01
+    je .quit_dialog_esc
+    ; Y and N are already set in kb_char by the ASCII conversion above
+    ; Just ensure kb_flag is set (already done in .set_flag)
+    jmp .done
+    
+.quit_dialog_esc:
+    ; ESC in dialog - resume game
+    mov byte [cs:game_paused], 0
+    mov byte [cs:in_quit_dialog], 0
+    jmp .done
+    
+.handle_esc:
+    ; ESC pressed - pause and show dialog
+    mov byte [cs:game_paused], 1
+    mov byte [cs:in_quit_dialog], 1
+    jmp .done
+    
+.move_up:
+    ; Move up one block
+    cmp byte [cs:player_row], 1
+    jle .done
+    dec byte [cs:player_row]
+    jmp .done
+    
+.move_down:
+    ; Move down one block, but don't go below screen (car is 2 rows tall, max row is 22)
+    cmp byte [cs:player_row], 22
+    jge .done
+    inc byte [cs:player_row]
+    jmp .done
+    
+.move_left:
+    ; Move to left lane
+    mov al, [cs:player_col]
+    cmp al, LANE_LEFT
+    je .done
+    cmp al, LANE_MIDDLE
+    je .left_m_to_l
+    ; From RIGHT to MIDDLE
+    mov byte [cs:player_col], LANE_MIDDLE
+    jmp .done
+.left_m_to_l:
+    mov byte [cs:player_col], LANE_LEFT
+    jmp .done
+    
+.move_right:
+    ; Move to right lane
+    mov al, [cs:player_col]
+    cmp al, LANE_RIGHT
+    je .done
+    cmp al, LANE_MIDDLE
+    je .right_m_to_r
+    ; From LEFT to MIDDLE
+    mov byte [cs:player_col], LANE_MIDDLE
+    jmp .done
+.right_m_to_r:
+    mov byte [cs:player_col], LANE_RIGHT
+    jmp .done
+    
+.key_release:
+    ; Ignore key releases
+    jmp .done
+    
+.done:
+    mov al, 0x20
+    out 0x20, al
+    pop bx
+    pop ax
+    iret
+
+; ==========================================================
+; --- Keyboard functions ---
+; ==========================================================
+
+get_key:
+    push bx
+    push cx
+.wait:
+    mov byte [kb_flag], 0
+    mov cx, 10
+.delay_loop:
+    push cx
+    mov cx, 0x1FFF
+.inner:
+    loop .inner
+    pop cx
+    loop .delay_loop
+    
+    cmp byte [kb_flag], 0
+    je .wait
+    mov al, [kb_char]
+    cmp al, 0
+    je .wait
+    pop cx
+    pop bx
+    ret
+
+wait_space:
+    push ax
+.wait:
+    call get_key
+    cmp al, ' '
+    jne .wait
+    pop ax
+    ret
+
+reset_game_state:
+    ; Clear all game arrays
+    mov byte [obs_count], 0
+    mov byte [obs_rows], 0
+    mov byte [obs_rows+1], 0
+    mov byte [obs_rows+2], 0
+    mov byte [obs_cols], 0
+    mov byte [obs_cols+1], 0
+    mov byte [obs_cols+2], 0
+    
+    mov byte [coin_count], 0
+    mov byte [coin_rows], 0
+    mov byte [coin_rows+1], 0
+    mov byte [coin_rows+2], 0
+    mov byte [coin_cols], 0
+    mov byte [coin_cols+1], 0
+    mov byte [coin_cols+2], 0
+    
+    mov byte [fuel_count], 0
+    mov byte [fuel_rows], 0
+    mov byte [fuel_rows+1], 0
+    mov byte [fuel_cols], 0
+    mov byte [fuel_cols+1], 0
+    
+    mov word [frame_counter], 0
+    mov word [update_counter], 0
+    mov word [player_score], 0
+    mov byte [player_row], 20
+    mov byte [player_col], LANE_MIDDLE
+    mov byte [prev_player_row], 20
+    mov byte [prev_player_col], LANE_MIDDLE
+    mov byte [game_animating], 0
+    mov byte [in_quit_dialog], 0
+    mov byte [game_over], 0
+    mov word [slowdown_frames], 0
+    ret
+
+; ==========================================================
+; --- Subroutines ---
+; ==========================================================
+
+hook_keyboard:
+    pusha
+    xor ax, ax
+    mov es, ax
+    ; Hook keyboard interrupt
+    mov ax, [es:9*4]
+    mov [old_kb_isr], ax
+    mov ax, [es:9*4+2]
+    mov [old_kb_isr+2], ax
+    cli
+    mov word [es:9*4], keyboard_isr
+    mov [es:9*4+2], cs
+    ; Hook software interrupt 0x60 for quit dialog
+    mov word [es:0x60*4], quit_dialog_isr
+    mov [es:0x60*4+2], cs
+    sti
+    popa
+    ret
+
+restore_keyboard:
+    pusha
+    xor ax, ax
+    mov es, ax
+    cli
+    mov ax, [old_kb_isr]
+    mov [es:9*4], ax
+    mov ax, [old_kb_isr+2]
+    mov [es:9*4+2], ax
+    sti
+    popa
+    ret
+
+clear_screen:
+    pusha
+    push es
+    mov ax, 0xb800
+    mov es, ax
+    mov di, 0
+    mov cx, 2000
+    mov ax, 0x0720
+    rep stosw
+    pop es
+    popa
+    ret
+
+show_intro_screen:
+    call clear_screen
+    push es
+    mov ax, 0xb800
+    mov es, ax
+    
+    mov di, (7 * 160) + (33 * 2)
+    mov si, msg_intro1
+    mov ah, 0x0E
+.l1:
+    lodsb
+    cmp al, 0
+    je .l2
+    stosw
+    jmp .l1
+.l2:
+    mov di, (10 * 160) + (30 * 2)
+    mov si, msg_intro2
+    mov ah, 0x0F
+.l2loop:
+    lodsb
+    cmp al, 0
+    je .l3
+    stosw
+    jmp .l2loop
+.l3:
+    mov di, (12 * 160) + (32 * 2)
+    mov si, msg_intro3
+    mov ah, 0x0F
+.l3loop:
+    lodsb
+    cmp al, 0
+    je .l4
+    stosw
+    jmp .l3loop
+.l4:
+    mov di, (16 * 160) + (28 * 2)
+    mov si, msg_intro4
+    mov ah, 0x0A
+.l4loop:
+    lodsb
+    cmp al, 0
+    je .done
+    stosw
+    jmp .l4loop
+.done:
+    pop es
+    ret
+
+input_name_roll:
+    call clear_screen
+    push es
+    mov ax, 0xb800
+    mov es, ax
+    
+    mov di, (10 * 160) + (28 * 2)
+    mov si, msg_name
+    mov ah, 0x0F
+.name_prompt:
+    lodsb
+    cmp al, 0
+    je .get_name
+    stosw
+    jmp .name_prompt
+    
+.get_name:
+    mov si, player_name
+    mov cx, 0
+.name_loop:
+    call get_key
+    cmp al, 13
+    je .name_done
+    cmp al, 8
+    je .name_back
+    cmp al, 'A'
+    jb .name_loop
+    cmp al, 'Z'+1
+    jb .name_ok
+    cmp al, ' '
+    jne .name_loop
+.name_ok:
+    cmp cx, 19
+    jae .name_loop
+    mov [si], al
+    inc si
+    inc cx
+    mov ah, 0x0F
+    stosw
+    jmp .name_loop
+    
+.name_back:
+    cmp cx, 0
+    je .name_loop
+    dec si
+    mov byte [si], 0
+    dec cx
+    sub di, 2
+    mov ax, 0x0720
+    stosw
+    sub di, 2
+    jmp .name_loop
+    
+.name_done:
+    mov di, (12 * 160) + (28 * 2)
+    mov si, msg_roll
+    mov ah, 0x0F
+.roll_prompt:
+    lodsb
+    cmp al, 0
+    je .get_roll
+    stosw
+    jmp .roll_prompt
+    
+.get_roll:
+    mov si, player_roll
+    mov cx, 0
+.roll_loop:
+    call get_key
+    cmp al, 13
+    je .done
+    cmp al, 8
+    je .roll_back
+    cmp al, '0'
+    jb .check_letter
+    cmp al, '9'+1
+    jb .roll_ok
+.check_letter:
+    cmp al, 'A'
+    jb .check_dash
+    cmp al, 'Z'+1
+    jb .roll_ok
+.check_dash:
+    cmp al, '-'
+    jne .roll_loop
+.roll_ok:
+    cmp cx, 14
+    jae .roll_loop
+    mov [si], al
+    inc si
+    inc cx
+    mov ah, 0x0F
+    stosw
+    jmp .roll_loop
+    
+.roll_back:
+    cmp cx, 0
+    je .roll_loop
+    dec si
+    mov byte [si], 0
+    dec cx
+    sub di, 2
+    mov ax, 0x0720
+    stosw
+    sub di, 2
+    jmp .roll_loop
+    
+.done:
+    pop es
+    ret
+
+show_instructions:
+    call clear_screen
+    push es
+    mov ax, 0xb800
+    mov es, ax
+    
+    mov di, (6 * 160) + (34 * 2)
+    mov si, msg_inst1
+    mov ah, 0x0E
+.l1:
+    lodsb
+    cmp al, 0
+    je .l2
+    stosw
+    jmp .l1
+.l2:
+    mov di, (9 * 160) + (29 * 2)
+    mov si, msg_inst2
+    mov ah, 0x0F
+.l2loop:
+    lodsb
+    cmp al, 0
+    je .l3
+    stosw
+    jmp .l2loop
+.l3:
+    mov di, (11 * 160) + (29 * 2)
+    mov si, msg_inst3
+    mov ah, 0x0F
+.l3loop:
+    lodsb
+    cmp al, 0
+    je .l4
+    stosw
+    jmp .l3loop
+.l4:
+    mov di, (13 * 160) + (29 * 2)
+    mov si, msg_inst4
+    mov ah, 0x0F
+.l4loop:
+    lodsb
+    cmp al, 0
+    je .l5
+    stosw
+    jmp .l4loop
+.l5:
+    mov di, (15 * 160) + (29 * 2)
+    mov si, msg_inst5
+    mov ah, 0x0F
+.l5loop:
+    lodsb
+    cmp al, 0
+    je .l6
+    stosw
+    jmp .l5loop
+.l6:
+    mov di, (18 * 160) + (28 * 2)
+    mov si, msg_inst6
+    mov ah, 0x0A
+.l6loop:
+    lodsb
+    cmp al, 0
+    je .done
+    stosw
+    jmp .l6loop
+.done:
+    pop es
+    ret
+
+show_end_screen:
+    call clear_screen
+    push es
+    mov ax, 0xb800
+    mov es, ax
+    
+    mov di, (7 * 160) + (35 * 2)
+    mov si, msg_end1
+    mov ah, 0x0C
+.title:
+    lodsb
+    cmp al, 0
+    je .name
+    stosw
+    jmp .title
+.name:
+    mov di, (10 * 160) + (32 * 2)
+    mov si, msg_end2
+    mov ah, 0x0F
+.name_label:
+    lodsb
+    cmp al, 0
+    je .name_val
+    stosw
+    jmp .name_label
+.name_val:
+    mov si, player_name
+.name_loop:
+    lodsb
+    cmp al, 0
+    je .roll
+    mov ah, 0x0F
+    stosw
+    jmp .name_loop
+.roll:
+    mov di, (12 * 160) + (32 * 2)
+    mov si, msg_end3
+    mov ah, 0x0F
+.roll_label:
+    lodsb
+    cmp al, 0
+    je .roll_val
+    stosw
+    jmp .roll_label
+.roll_val:
+    mov si, player_roll
+.roll_loop:
+    lodsb
+    cmp al, 0
+    je .score
+    mov ah, 0x0F
+    stosw
+    jmp .roll_loop
+.score:
+    mov di, (14 * 160) + (32 * 2)
+    mov si, msg_end4
+    mov ah, 0x0F
+.score_label:
+    lodsb
+    cmp al, 0
+    je .score_val
+    stosw
+    jmp .score_label
+.score_val:
+    mov ax, [player_score]
+    call print_number
+.inst:
+    mov di, (17 * 160) + (28 * 2)
+    mov si, msg_end5
+    mov ah, 0x0A
+.inst_loop:
+    lodsb
+    cmp al, 0
+    je .done
+    stosw
+    jmp .inst_loop
+.done:
+    pop es
+    ret
+
+print_number:
+    push ax
+    push bx
+    push cx
+    push dx
+    mov bx, 10
+    mov cx, 0
+.divide:
+    xor dx, dx
+    div bx
+    push dx
+    inc cx
+    cmp ax, 0
+    jne .divide
+.print:
+    pop ax
+    add al, '0'
+    mov ah, 0x0F
+    stosw
+    loop .print
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+show_quit_dialog:
+    pusha
+    push es
+    mov ax, 0xb800
+    mov es, ax
+    
+    ; Draw a box for the dialog (centered)
+    ; Top border
+    mov di, (10 * 160) + (28 * 2)
+    mov cx, 24
+    mov ax, 0x1F20
+.top:
+    stosw
+    loop .top
+    
+    ; Side borders and clear middle
+    mov bx, 11
+.side_loop:
+    ; Calculate row offset: bx * 160
+    mov ax, bx
+    mov cx, 160
+    mul cx
+    push ax              ; Save row offset
+    mov di, ax
+    ; Add column offsets
+    add di, (28 * 2)      ; Left border
+    mov word [es:di], 0x1F20
+    pop ax               ; Restore row offset
+    push ax
+    mov di, ax
+    add di, (51 * 2)      ; Right border
+    mov word [es:di], 0x1F20
+    ; Clear middle
+    pop ax               ; Restore row offset
+    mov di, ax
+    add di, (29 * 2)
+    mov cx, 22
+    mov ax, 0x1F20
+    rep stosw
+    inc bx
+    cmp bx, 14
+    jb .side_loop
+    
+    ; Bottom border
+    mov di, (14 * 160) + (28 * 2)
+    mov cx, 24
+    mov ax, 0x1F20
+.bot:
+    stosw
+    loop .bot
+    
+    ; Draw message
+    mov di, (11 * 160) + (30 * 2)
+    mov si, msg_quit
+    mov ah, 0x1F
+.msg:
+    lodsb
+    cmp al, 0
+    je .y_option
+    stosw
+    jmp .msg
+    
+.y_option:
+    mov di, (12 * 160) + (32 * 2)
+    mov si, msg_quit_y
+    mov ah, 0x1E
+.y_loop:
+    lodsb
+    cmp al, 0
+    je .n_option
+    stosw
+    jmp .y_loop
+    
+.n_option:
+    mov di, (13 * 160) + (32 * 2)
+    mov si, msg_quit_n
+    mov ah, 0x1E
+.n_loop:
+    lodsb
+    cmp al, 0
+    je .done
+    stosw
+    jmp .n_loop
+    
+.done:
+    pop es
+    popa
+    ret
+
+; [Include all game drawing functions - same as before]
+
 draw_background:
     pusha
+    push es
+    mov ax, 0xb800
+    mov es, ax
     cld
     mov di, 0
     mov bx, 25
 pass1_row_loop:
-    mov ax, 0xAAB2
+    mov ax, 0x2AB2
     mov cx, 20
     rep stosw
     mov ax, 0x7020
     mov cx, 40
     rep stosw
-    mov ax, 0xAAB2
+    mov ax, 0x2AB2
     mov cx, 20
     rep stosw
     dec bx
     jnz pass1_row_loop
     mov bx, 0
-    mov di, 0
 pass2_row_loop:
-    mov bp, di
+    push bx
+    mov ax, bx
+    mov cx, 160
+    mul cx
+    mov di, ax
     test bx, 1
     jnz skip_dash_draw
-    add di, DASH_1_COL * 2
-    mov ax, 0x7FDB
-    mov [es:di], ax
-    mov di, bp
-    add di, DASH_2_COL * 2
-    mov ax, 0x7FDB
-    mov [es:di], ax
+    add di, 33 * 2
+    mov word [es:di], 0x7FDB
+    sub di, 33 * 2
+    add di, 46 * 2
+    mov word [es:di], 0x7FDB
 skip_dash_draw:
-    mov di, bp
-    add di, 160
+    pop bx
     inc bx
     cmp bx, 25
     jne pass2_row_loop
-    popa
-    ret
-clear_player_car:
-    pusha
-    mov di, PLAYER_ROW * 160 + LANE_2_COL * 2
-    mov ax, 0x7020
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    add di, 160 - 2
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    popa
-    ret
-place_player_car:
-    pusha
-    mov di, PLAYER_ROW * 160 + LANE_2_COL * 2
-    mov ax, 0x7CDB
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    add di, 160 - 2
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    popa
-    ret
-scroll_screen_up:
-    pusha
-    push es
-    push ds
-    mov ax, 0xb800
-    mov es, ax
-    mov ds, ax
-    mov si, 160
-    mov di, 0
-    mov cx, 24 * 80
-    cld
-    rep movsw
-    pop ds
     pop es
     popa
     ret
-draw_bottom_row:
+
+redraw_lane_lines:
     pusha
-    cld
-    mov di, 24 * 160
-    mov ax, 0xAAB2
-    mov cx, 20
-    rep stosw
-    mov ax, 0x7020
-    mov cx, 40
-    rep stosw
-    mov ax, 0xAAB2
-    mov cx, 20
-    rep stosw
-    mov di, 24 * 160
-    mov ax, [dash_counter]
-    test ax, 1
-    jnz skip_bottom_dash
-    add di, DASH_1_COL * 2
-    mov ax, 0x7FDB
-    mov [es:di], ax
-    mov di, 24 * 160
-    add di, DASH_2_COL * 2
-    mov ax, 0x7FDB
-    mov [es:di], ax
-skip_bottom_dash:
-    inc word [dash_counter]
-    popa
-    ret
-get_rtc_second:
-    mov al, 0x00
-    out 0x70, al
-    jmp $+2
-    in al, 0x71
-    mov bl, al
-    and al, 0x0F
-    mov cl, al
-    mov al, bl
-    shr al, 4
-    mov ah, 0
-    mov bl, 10
-    mul bl
-    add al, cl
-    ret
-place_obstacle_car:
-    pusha
-    call get_rtc_second
-    mov ah, 0
-    test al, 1
-    jnz .use_lane_2
-.use_lane_1:
-    mov dl, LANE_1_COL
-    jmp .draw
-.use_lane_2:
-    mov dl, LANE_2_COL
-.draw:
-    mov di, 0
-    mov al, dl
-    mov ah, 0
-    shl ax, 1
-    add di, ax
-    mov ax, 0x79DB
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    add di, 160 - 2
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    popa
-    ret
-place_coin:
-    pusha
-    call get_rtc_second
-    mov ah, 0
-    test al, 1
-    jnz .coin_lane_2
-.coin_lane_1:
-    mov dl, LANE_1_COL
-    jmp .draw_coin
-.coin_lane_2:
-    mov dl, LANE_2_COL
-.draw_coin:
-    mov di, 0
-    mov al, dl
-    mov ah, 0
-    shl ax, 1
-    add di, ax
-    mov ax, 0x0E24
-    mov [es:di], ax
-    popa
-    ret
-place_fuel:
-    pusha
-    call get_rtc_second
-    mov ah, 0
-    test al, 1
-    jnz .fuel_lane_2
-.fuel_lane_1:
-    mov dl, LANE_1_COL
-    jmp .draw_fuel
-.fuel_lane_2:
-    mov dl, LANE_2_COL
-.draw_fuel:
-    mov di, 0
-    mov al, dl
-    mov ah, 0
-    shl ax, 1
-    add di, ax
-    mov ax, 0x0A46
-    mov [es:di], ax
-    popa
-    ret
-check_collision:
-    pusha
-    mov di, PLAYER_ROW * 160 + LANE_2_COL * 2
-    mov ax, [es:di]
-    cmp ax, 0x79DB
-    je .obstacle_collision
-    cmp ax, 0x0E24
-    je .coin_collision
-    cmp ax, 0x0A46
-    je .fuel_collision
-    add di, 2
-    mov ax, [es:di]
-    cmp ax, 0x79DB
-    je .obstacle_collision
-    cmp ax, 0x0E24
-    je .coin_collision
-    cmp ax, 0x0A46
-    je .fuel_collision
-    add di, 160 - 2
-    mov ax, [es:di]
-    cmp ax, 0x79DB
-    je .obstacle_collision
-    cmp ax, 0x0E24
-    je .coin_collision
-    cmp ax, 0x0A46
-    je .fuel_collision
-    add di, 2
-    mov ax, [es:di]
-    cmp ax, 0x79DB
-    je .obstacle_collision
-    cmp ax, 0x0E24
-    je .coin_collision
-    cmp ax, 0x0A46
-    je .fuel_collision
-    mov al, 0
-    jmp .collision_done
-.obstacle_collision:
-    mov al, 1
-    jmp .collision_done
-.coin_collision:
-    mov al, 2
-    jmp .collision_done
-.fuel_collision:
-    mov al, 3
-    jmp .collision_done
-.collision_done:
-    mov [collision_result], al
-    popa
-    mov al, [collision_result]
-    ret
-collision_result: db 0
-delay:
-    pusha
-    mov cx, 0x0FFF
-delay_loop:
-    push cx
-    mov cx, 0x00FF
-delay_inner:
-    loop delay_inner
-    pop cx
-    loop delay_loop
-    popa
-    ret
-main:
+    push es
     mov ax, 0xb800
     mov es, ax
+    mov al, dh
+    test al, 1
+    jnz .done
+    mov ah, 0
+    mov cx, 160
+    mul cx
+    mov di, ax
+    add di, 33 * 2
+    mov word [es:di], 0x7FDB
+    sub di, 33 * 2
+    add di, 46 * 2
+    mov word [es:di], 0x7FDB
+.done:
+    pop es
+    popa
+    ret
+
+draw_car_at:
+    pusha
+    push es
+    push dx
+    mov ax, 0xb800
+    mov es, ax
+    mov al, dh
+    mov ah, 0
+    mov cx, 160
+    mul cx
+    mov di, ax
+    pop dx
+    push dx
+    mov al, dl
+    mov ah, 0
+    shl ax, 1
+    add di, ax
+    mov ax, bx
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    add di, 160 - 2
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    pop dx
+    call redraw_lane_lines
+    inc dh
+    call redraw_lane_lines
+    pop es
+    popa
+    ret
+
+erase_car_at:
+    pusha
+    push es
+    push dx
+    mov ax, 0xb800
+    mov es, ax
+    mov al, dh
+    mov ah, 0
+    mov cx, 160
+    mul cx
+    mov di, ax
+    pop dx
+    push dx
+    mov al, dl
+    mov ah, 0
+    shl ax, 1
+    add di, ax
+    mov ax, 0x7020
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    add di, 160 - 2
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    pop dx
+    call redraw_lane_lines
+    inc dh
+    call redraw_lane_lines
+    pop es
+    popa
+    ret
+
+draw_coin_at:
+    pusha
+    push es
+    push dx              ; Save dx (contains row in dh, col in dl)
+    mov ax, 0xb800
+    mov es, ax
+    pop dx               ; Restore dx with row and column
+    push dx              ; Save for column calculation
+    mov al, dh           ; Get row
+    mov ah, 0
+    mov cx, 160
+    mul cx               ; Calculate row offset
+    mov di, ax           ; di = row * 160
+    pop dx               ; Get column value
+    mov al, dl           ; Get column
+    mov ah, 0
+    shl ax, 1            ; Multiply by 2 (each char is 2 bytes)
+    add di, ax           ; di = row_offset + (col * 2)
+    mov ax, 0x0E24       ; Yellow $ symbol
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    add di, 160 - 2
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    pop es
+    popa
+    ret
+
+erase_coin_at:
+    pusha
+    push es
+    push dx
+    mov ax, 0xb800
+    mov es, ax
+    mov al, dh
+    mov ah, 0
+    mov cx, 160
+    mul cx
+    mov di, ax
+    pop dx
+    push dx
+    mov al, dl
+    mov ah, 0
+    shl ax, 1
+    add di, ax
+    mov ax, 0x7020
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    add di, 160 - 2
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    pop dx
+    call redraw_lane_lines
+    inc dh
+    call redraw_lane_lines
+    pop es
+    popa
+    ret
+
+draw_fuel_at:
+    pusha
+    push es
+    push dx              ; Save dx (contains row in dh, col in dl)
+    mov ax, 0xb800
+    mov es, ax
+    pop dx               ; Restore dx with row and column
+    push dx              ; Save for column calculation
+    mov al, dh           ; Get row
+    mov ah, 0
+    mov cx, 160
+    mul cx               ; Calculate row offset
+    mov di, ax           ; di = row * 160
+    pop dx               ; Get column value
+    mov al, dl           ; Get column
+    mov ah, 0
+    shl ax, 1            ; Multiply by 2 (each char is 2 bytes)
+    add di, ax           ; di = row_offset + (col * 2)
+    mov ax, 0x0C46       ; Red F symbol
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    add di, 160 - 2
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    pop es
+    popa
+    ret
+
+erase_fuel_at:
+    pusha
+    push es
+    push dx
+    mov ax, 0xb800
+    mov es, ax
+    mov al, dh
+    mov ah, 0
+    mov cx, 160
+    mul cx
+    mov di, ax
+    pop dx
+    push dx
+    mov al, dl
+    mov ah, 0
+    shl ax, 1
+    add di, ax
+    mov ax, 0x7020
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    add di, 160 - 2
+    mov [es:di], ax
+    add di, 2
+    mov [es:di], ax
+    pop dx
+    call redraw_lane_lines
+    inc dh
+    call redraw_lane_lines
+    pop es
+    popa
+    ret
+
+get_random_lane:
+    push ax
+    push bx
+    mov al, 0x00
+    out 0x70, al
+    nop
+    nop
+    in al, 0x71
+    add al, [random_seed]
+    mov bl, [frame_counter]
+    add al, bl
+    mov [random_seed], al
+    and al, 0x0F
+    xor ah, ah
+    mov bl, 3
+    div bl
+    cmp ah, 0
+    je .lane_left
+    cmp ah, 1
+    je .lane_middle
+.lane_right:
+    mov dl, LANE_RIGHT
+    jmp .done
+.lane_middle:
+    mov dl, LANE_MIDDLE
+    jmp .done
+.lane_left:
+    mov dl, LANE_LEFT
+.done:
+    pop bx
+    pop ax
+    ret
+
+spawn_obstacle:
+    pusha
+    mov al, [obs_count]
+    cmp al, 3
+    jae .done
+    call get_random_lane
+    mov al, [obs_count]
+    mov ah, 0
+    mov si, ax
+    mov byte [obs_rows + si], 1
+    mov [obs_cols + si], dl
+    inc byte [obs_count]
+.done:
+    popa
+    ret
+
+spawn_coin:
+    pusha
+    mov al, [coin_count]
+    cmp al, 3
+    jae .done
+    call get_random_lane
+    ; dl now contains the lane column (26, 38, or 50)
+    mov al, [coin_count]
+    mov ah, 0
+    mov si, ax
+    mov byte [coin_rows + si], 1
+    mov byte [coin_cols + si], dl    ; Explicitly store as byte
+    inc byte [coin_count]
+.done:
+    popa
+    ret
+
+spawn_fuel:
+    pusha
+    mov al, [fuel_count]
+    cmp al, 2
+    jae .done
+    call get_random_lane
+    ; dl now contains the lane column (26, 38, or 50)
+    mov al, [fuel_count]
+    mov ah, 0
+    mov si, ax
+    mov byte [fuel_rows + si], 1
+    mov byte [fuel_cols + si], dl    ; Explicitly store as byte
+    inc byte [fuel_count]
+.done:
+    popa
+    ret
+
+update_obstacles:
+    pusha
+    mov si, 0
+.loop:
+    cmp si, 3
+    jae .done
+    mov al, [obs_rows + si]
+    cmp al, 0
+    je .next
+    mov dh, al
+    mov dl, [obs_cols + si]
+    call erase_car_at
+    inc byte [obs_rows + si]
+    mov al, [obs_rows + si]
+    cmp al, 24
+    ja .remove
+    mov dh, al
+    mov dl, [obs_cols + si]
+    mov bx, 0x19DB
+    call draw_car_at
+    jmp .next
+.remove:
+    mov byte [obs_rows + si], 0
+    dec byte [obs_count]
+.next:
+    inc si
+    jmp .loop
+.done:
+    popa
+    ret
+
+update_coins:
+    pusha
+    mov si, 0
+.loop:
+    cmp si, 3
+    jae .done
+    mov al, [coin_rows + si]
+    cmp al, 0
+    je .next
+    mov dh, al
+    mov dl, [coin_cols + si]    ; Read column value (should be 26, 38, or 50)
+    cmp dl, 0                   ; Safety check: skip if column is 0
+    je .next
+    call erase_coin_at
+    inc byte [coin_rows + si]
+    mov al, [coin_rows + si]
+    cmp al, 24
+    ja .remove
+    mov dh, al
+    mov dl, [coin_cols + si]    ; Read column value again
+    cmp dl, 0                   ; Safety check: skip if column is 0
+    je .remove
+    call draw_coin_at
+    jmp .next
+.remove:
+    mov byte [coin_rows + si], 0
+    ; Don't clear coin_cols - it will be overwritten on next spawn
+    dec byte [coin_count]
+.next:
+    inc si
+    jmp .loop
+.done:
+    popa
+    ret
+
+update_fuel:
+    pusha
+    mov si, 0
+.loop:
+    cmp si, 2
+    jae .done
+    mov al, [fuel_rows + si]
+    cmp al, 0
+    je .next
+    mov dh, al
+    mov dl, [fuel_cols + si]    ; Read column value (should be 26, 38, or 50)
+    cmp dl, 0                   ; Safety check: skip if column is 0
+    je .next
+    call erase_fuel_at
+    inc byte [fuel_rows + si]
+    mov al, [fuel_rows + si]
+    cmp al, 24
+    ja .remove
+    mov dh, al
+    mov dl, [fuel_cols + si]    ; Read column value again
+    cmp dl, 0                   ; Safety check: skip if column is 0
+    je .remove
+    call draw_fuel_at
+    jmp .next
+.remove:
+    mov byte [fuel_rows + si], 0
+    ; Don't clear fuel_cols - it will be overwritten on next spawn
+    dec byte [fuel_count]
+.next:
+    inc si
+    jmp .loop
+.done:
+    popa
+    ret
+
+draw_player:
+    pusha
+    ; Check if position changed
+    mov al, [player_row]
+    mov bl, [player_col]
+    cmp al, [prev_player_row]
+    jne .position_changed
+    cmp bl, [prev_player_col]
+    jne .position_changed
+    
+    ; Position hasn't changed, just redraw
+    mov dh, [player_row]
+    mov dl, [player_col]
+    mov bx, 0x4CDB
+    call draw_car_at
+    jmp .done
+    
+.position_changed:
+    ; Erase old position first
+    mov dh, [prev_player_row]
+    mov dl, [prev_player_col]
+    call erase_car_at
+    
+    ; Draw new position
+    mov dh, [player_row]
+    mov dl, [player_col]
+    mov bx, 0x4CDB
+    call draw_car_at
+    
+    ; Update previous position
+    mov al, [player_row]
+    mov [prev_player_row], al
+    mov al, [player_col]
+    mov [prev_player_col], al
+    
+.done:
+    popa
+    ret
+
+check_collision:
+    pusha
+    mov al, [player_row]
+    mov bl, [player_col]
+    
+    ; Check collision with obstacles (both car and obstacles are 2x2)
+    mov si, 0
+.check_obs_loop:
+    cmp si, 3
+    jae .check_done
+    mov cl, [obs_rows + si]
+    cmp cl, 0
+    je .next_obs
+    mov ch, [obs_cols + si]
+    
+    ; Check if columns match
+    cmp bl, ch
+    jne .next_obs
+    
+    ; Check if rows overlap (player at row, row+1; obstacle at row, row+1)
+    ; Player row matches obstacle row
+    cmp al, cl
+    je .blue_collision
+    ; Player row matches obstacle row+1
+    mov dl, cl
+    inc dl
+    cmp al, dl
+    je .blue_collision
+    ; Player row+1 matches obstacle row
+    mov dl, al
+    inc dl
+    cmp dl, cl
+    je .blue_collision
+    ; Player row+1 matches obstacle row+1
+    mov dl, al
+    inc dl
+    mov dh, cl
+    inc dh
+    cmp dl, dh
+    je .blue_collision
+    
+.next_obs:
+    inc si
+    jmp .check_obs_loop
+    
+.blue_collision:
+    ; Collision detected - end the game
+    mov byte [game_over], 1
+    
+.check_done:
+    popa
+    ret
+
+delay:
+    push cx
+    push dx
+    mov dx, 3           ; Multiple delay loops for slower game
+.delay_outer:
+    mov cx, 0xFFFF      ; Much larger delay
+.delay_inner:
+    loop .delay_inner
+    dec dx
+    jnz .delay_outer
+    pop dx
+    pop cx
+    ret
+
+; ==========================================================
+; --- Main ---
+; ==========================================================
+start:
+    call hook_keyboard
+    
+    call show_intro_screen
+    call wait_space
+    
+    call input_name_roll
+    
+    call show_instructions
+    call wait_space
+    
+main_menu:
+    call reset_game_state
     call draw_background
-    call place_player_car
-    mov word [frame_counter], 0
-    mov word [dash_counter], 0
-    mov word [obstacle_spawn_counter], 0
+    call draw_player
+    
+    push es
+    mov ax, 0xb800
+    mov es, ax
+    mov di, (12 * 160) + (28 * 2)
+    mov si, msg_main
+    mov ah, 0x0F
+.main_msg:
+    lodsb
+    cmp al, 0
+    je .wait_main
+    stosw
+    jmp .main_msg
+.wait_main:
+    pop es
+    
+    call wait_space
+    
+    push es
+    mov ax, 0xb800
+    mov es, ax
+    mov di, (12 * 160) + (28 * 2)
+    mov cx, 26
+    mov ax, 0x7020
+    rep stosw
+    pop es
+    
+    mov byte [game_started], 1
+    mov byte [game_animating], 0
+
 game_loop:
-    mov ah, 0x01
-    int 0x16
-    jnz exit
-    call clear_player_car
-    call scroll_screen_up
-    call draw_bottom_row
+    ; Check if game is paused
+    cmp byte [game_paused], 1
+    jne .check_animating
+    
+    ; Show quit dialog if in dialog mode
+    cmp byte [in_quit_dialog], 1
+    jne .just_paused
+    call show_quit_dialog
+    
+.pause_wait:
+    ; Wait for Y, N, or ESC
+    mov byte [kb_flag], 0
+    call delay
+    call delay
+    cmp byte [kb_flag], 0
+    je .pause_wait
+    
+    ; Only process Y/N if in quit dialog
+    cmp byte [in_quit_dialog], 1
+    jne .check_esc_resume
+    
+    mov al, [kb_char]
+    cmp al, 'Y'
+    je .to_end
+    cmp al, 'N'
+    je .resume
+    
+.check_esc_resume:
+    mov al, [kb_char]
+    cmp al, 27  ; ESC
+    je .resume
+    jmp .pause_wait
+    
+.just_paused:
+    ; Paused but not in dialog - wait for ESC to resume
+    mov byte [kb_flag], 0
+    call delay
+    call delay
+    cmp byte [kb_flag], 0
+    je game_loop
+    mov al, [kb_char]
+    cmp al, 27  ; ESC
+    je .resume
+    jmp game_loop
+    
+.to_end:
+    mov byte [game_paused], 0
+    mov byte [in_quit_dialog], 0
+    jmp end_screen
+    
+.resume:
+    mov byte [game_paused], 0
+    mov byte [in_quit_dialog], 0
+    call draw_background
+    call draw_player
+    jmp game_loop
+    
+.check_animating:
+    ; Wait for any key to start animation
+    cmp byte [game_animating], 0
+    jne .running
+    ; Static screen - wait for any key
+    mov byte [kb_flag], 0
+    call delay
+    cmp byte [kb_flag], 0
+    je game_loop
+    ; Key pressed - start animation
+    mov byte [game_animating], 1
+    
+.running:
+    ; Check for collision first - if game over, end immediately
+    call check_collision
+    cmp byte [game_over], 1
+    je .game_over_detected
+    
     inc word [frame_counter]
-    inc word [obstacle_spawn_counter]
-    mov ax, [obstacle_spawn_counter]
-    mov bx, 50
+    
+.normal_speed:
+.do_updates:
+    ; Only update game objects every 2 frames to slow down movement
+    inc word [update_counter]
+    mov ax, [update_counter]
+    and ax, 1
+    cmp ax, 0
+    jne .skip_object_updates
+    
+    ; Update obstacles, coins, and fuel
+    call update_obstacles
+    call update_coins
+    call update_fuel
+    
+.skip_object_updates:
+    ; Spawn new objects based on frame counter
+    mov ax, [frame_counter]
     xor dx, dx
+    mov bx, [spawn_interval]
     div bx
     cmp dx, 0
-    jne skip_obstacle_spawn
-    call place_obstacle_car
-skip_obstacle_spawn:
+    jne .skip_spawn_obs
+    call spawn_obstacle
+.skip_spawn_obs:
+    
     mov ax, [frame_counter]
-    mov bl, 15
-    xor ah, ah
-    div bl
-    cmp ah, 0
-    jne skip_coin
-    call place_coin
-skip_coin:
+    xor dx, dx
+    mov bx, 50
+    div bx
+    cmp dx, 0
+    jne .skip_spawn_coin
+    call spawn_coin
+.skip_spawn_coin:
+    
     mov ax, [frame_counter]
-    mov bl, 20
-    xor ah, ah
-    div bl
-    cmp ah, 0
-    jne skip_fuel
-    call place_fuel
-skip_fuel:
-    call check_collision
-    cmp al, 0
-    je .no_collision
-    cmp al, 1
-    je .game_over_collision
-    cmp al, 2
-    je .coin_collected
-    cmp al, 3
-    je .fuel_collected
-.no_collision:
-    call place_player_car
-.continue_loop:
+    xor dx, dx
+    mov bx, 60
+    div bx
+    cmp dx, 20
+    jne .skip_spawn_fuel
+    call spawn_fuel
+.skip_spawn_fuel:
+    
+.skip_updates:
+    call draw_player
+    
     call delay
     jmp game_loop
-.game_over_collision:
-    jmp exit
-.coin_collected:
-    mov di, PLAYER_ROW * 160 + LANE_2_COL * 2
-    mov ax, 0x7020
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    add di, 160 - 2
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    inc word [score]
-    call place_player_car
-    jmp .continue_loop
-.fuel_collected:
-    mov di, PLAYER_ROW * 160 + LANE_2_COL * 2
-    mov ax, 0x7020
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    add di, 160 - 2
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    call place_player_car
-    jmp .continue_loop
-exit:
-    mov ah, 0
-    int 0x16
+    
+.game_over_detected:
+    ; Collision detected - end the game
+    mov byte [game_started], 0
+    mov byte [game_animating], 0
+    jmp end_screen
+
+end_screen:
+    mov byte [game_started], 0
+    call show_end_screen
+    
+.wait_end:
+    call get_key
+    cmp al, ' '
+    je .restart
+    cmp al, 27              ; ESC
+    je .quit
+    jmp .wait_end
+    
+.restart:
+    jmp main_menu
+    
+.quit:
+    call restore_keyboard
     mov ax, 0x4c00
     int 0x21
