@@ -37,10 +37,12 @@ game_paused:    db 0
 game_animating: db 0
 in_quit_dialog: db 0
 game_over:      db 0
-slowdown_frames: dw 0
+lane_change_cooldown: dw 0    ; Cooldown timer for lane changes
 old_kb_isr:     dd 0
 
 player_score:   dw 0
+fuel_level:     db 100        ; Fuel level (0-100)
+fuel_timer:     dw 0          ; Timer for fuel decrease
 player_name:    times 20 db 0
 player_roll:    times 15 db 0
 
@@ -372,31 +374,81 @@ keyboard_isr:
     jmp .done
     
 .move_left:
-    ; Move to left lane
+    ; Check if cooldown is active
+    cmp word [cs:lane_change_cooldown], 0
+    jne .done
+    ; Determine target lane
     mov al, [cs:player_col]
     cmp al, LANE_LEFT
     je .done
+    mov bl, LANE_MIDDLE
     cmp al, LANE_MIDDLE
     je .left_m_to_l
     ; From RIGHT to MIDDLE
-    mov byte [cs:player_col], LANE_MIDDLE
-    jmp .done
+    jmp .check_collision_left
 .left_m_to_l:
-    mov byte [cs:player_col], LANE_LEFT
+    mov bl, LANE_LEFT
+    
+.check_collision_left:
+    ; Check collision at target position before moving
+    push ax
+    push bx
+    mov al, [cs:player_row]
+    ; bl already has target column
+    call check_collision_at_position
+    cmp al, 1
+    pop bx
+    pop ax
+    je .collision_detected_left
+    
+    ; No collision - proceed with move
+    mov [cs:player_col], bl
+    mov word [cs:lane_change_cooldown], 10    ; Set cooldown (10 frames)
+    jmp .done
+    
+.collision_detected_left:
+    ; Collision detected - trigger game over
+    mov byte [cs:game_over], 1
+    mov byte [cs:game_animating], 0    ; Stop animation
     jmp .done
     
 .move_right:
-    ; Move to right lane
+    ; Check if cooldown is active
+    cmp word [cs:lane_change_cooldown], 0
+    jne .done
+    ; Determine target lane
     mov al, [cs:player_col]
     cmp al, LANE_RIGHT
     je .done
+    mov bl, LANE_MIDDLE
     cmp al, LANE_MIDDLE
     je .right_m_to_r
     ; From LEFT to MIDDLE
-    mov byte [cs:player_col], LANE_MIDDLE
-    jmp .done
+    jmp .check_collision_right
 .right_m_to_r:
-    mov byte [cs:player_col], LANE_RIGHT
+    mov bl, LANE_RIGHT
+    
+.check_collision_right:
+    ; Check collision at target position before moving
+    push ax
+    push bx
+    mov al, [cs:player_row]
+    ; bl already has target column
+    call check_collision_at_position
+    cmp al, 1
+    pop bx
+    pop ax
+    je .collision_detected_right
+    
+    ; No collision - proceed with move
+    mov [cs:player_col], bl
+    mov word [cs:lane_change_cooldown], 10    ; Set cooldown (10 frames)
+    jmp .done
+    
+.collision_detected_right:
+    ; Collision detected - trigger game over
+    mov byte [cs:game_over], 1
+    mov byte [cs:game_animating], 0    ; Stop animation
     jmp .done
     
 .key_release:
@@ -447,40 +499,64 @@ wait_space:
     ret
 
 reset_game_state:
-    ; Clear all game arrays
+    ; Clear all game arrays using loops for efficiency
     mov byte [obs_count], 0
-    mov byte [obs_rows], 0
-    mov byte [obs_rows+1], 0
-    mov byte [obs_rows+2], 0
-    mov byte [obs_cols], 0
-    mov byte [obs_cols+1], 0
-    mov byte [obs_cols+2], 0
+    mov si, obs_rows
+    mov cx, 3
+.clear_obs_rows:
+    mov byte [si], 0
+    inc si
+    loop .clear_obs_rows
+    mov si, obs_cols
+    mov cx, 3
+.clear_obs_cols:
+    mov byte [si], 0
+    inc si
+    loop .clear_obs_cols
     
     mov byte [coin_count], 0
-    mov byte [coin_rows], 0
-    mov byte [coin_rows+1], 0
-    mov byte [coin_rows+2], 0
-    mov byte [coin_cols], 0
-    mov byte [coin_cols+1], 0
-    mov byte [coin_cols+2], 0
+    mov si, coin_rows
+    mov cx, 3
+.clear_coin_rows:
+    mov byte [si], 0
+    inc si
+    loop .clear_coin_rows
+    mov si, coin_cols
+    mov cx, 3
+.clear_coin_cols:
+    mov byte [si], 0
+    inc si
+    loop .clear_coin_cols
     
     mov byte [fuel_count], 0
-    mov byte [fuel_rows], 0
-    mov byte [fuel_rows+1], 0
-    mov byte [fuel_cols], 0
-    mov byte [fuel_cols+1], 0
+    mov si, fuel_rows
+    mov cx, 2
+.clear_fuel_rows:
+    mov byte [si], 0
+    inc si
+    loop .clear_fuel_rows
+    mov si, fuel_cols
+    mov cx, 2
+.clear_fuel_cols:
+    mov byte [si], 0
+    inc si
+    loop .clear_fuel_cols
     
     mov word [frame_counter], 0
     mov word [update_counter], 0
     mov word [player_score], 0
     mov byte [player_row], 20
     mov byte [player_col], LANE_MIDDLE
-    mov byte [prev_player_row], 20
-    mov byte [prev_player_col], LANE_MIDDLE
+    ; Initialize prev_player to 0,0 to force first draw
+    mov byte [prev_player_row], 0
+    mov byte [prev_player_col], 0
+    ; Initialize fuel system
+    mov byte [fuel_level], 100
+    mov word [fuel_timer], 0
     mov byte [game_animating], 0
     mov byte [in_quit_dialog], 0
     mov byte [game_over], 0
-    mov word [slowdown_frames], 0
+    mov word [lane_change_cooldown], 0
     ret
 
 ; ==========================================================
@@ -867,6 +943,103 @@ print_number:
     pop ax
     ret
 
+; Display score on screen during gameplay
+; Uses di register - caller must set di to screen position
+display_score:
+    pusha
+    push es
+    mov ax, 0xb800
+    mov es, ax
+    ; di should be set by caller to the screen position
+    ; Display "Score: " label
+    mov si, msg_score_label
+    mov ah, 0x0F
+.display_label:
+    lodsb
+    cmp al, 0
+    je .display_value
+    stosw
+    jmp .display_label
+.display_value:
+    ; Display score value
+    mov ax, [player_score]
+    call print_number
+    pop es
+    popa
+    ret
+
+msg_score_label: db 'Score: ', 0
+
+; Display fuel bar on screen
+; di should be set by caller to the screen position
+display_fuel_bar:
+    pusha
+    push es
+    mov ax, 0xb800
+    mov es, ax
+    ; Display "Fuel: " label
+    mov si, msg_fuel_label
+    mov ah, 0x0F
+.display_label:
+    lodsb
+    cmp al, 0
+    je .display_bar
+    stosw
+    jmp .display_label
+.display_bar:
+    ; Calculate fuel bar length (0-20 characters)
+    mov al, [fuel_level]
+    mov ah, 0
+    mov bl, 5           ; 100 / 20 = 5, so each unit = 5 fuel
+    div bl              ; al = fuel_level / 5 (0-20)
+    mov cl, al          ; cl = bar length
+    mov ch, 0
+    
+    ; Determine color based on fuel level
+    mov al, [fuel_level]
+    cmp al, 50
+    jae .green_color
+    cmp al, 25
+    jae .yellow_color
+    ; Red color (fuel < 25)
+    mov ah, 0x0C        ; Red on black
+    jmp .draw_bar
+.yellow_color:
+    mov ah, 0x0E        ; Yellow on black
+    jmp .draw_bar
+.green_color:
+    mov ah, 0x0A        ; Green on black
+    
+.draw_bar:
+    ; Draw filled portion
+    mov al, 0xDB        ; Solid block character
+    mov bx, cx          ; Save length
+.draw_filled:
+    cmp cx, 0
+    je .draw_empty
+    stosw
+    dec cx
+    jmp .draw_filled
+    
+.draw_empty:
+    ; Draw empty portion (20 - filled)
+    mov cx, 20
+    sub cx, bx          ; cx = 20 - filled_length
+    cmp cx, 0
+    je .done
+    mov al, 0xB0        ; Light shade character
+    mov ah, 0x07        ; Gray on black
+.draw_empty_loop:
+    stosw
+    loop .draw_empty_loop
+    
+.done:
+    pop es
+    popa
+    ret
+
+msg_fuel_label: db 'Fuel: ', 0
+
 show_quit_dialog:
     pusha
     push es
@@ -1007,14 +1180,19 @@ redraw_lane_lines:
     mov ax, 0xb800
     mov es, ax
     mov al, dh
-    test al, 1
-    jnz .done
     mov ah, 0
-    mov cx, 160
-    mul cx
+    ; Always redraw lane lines regardless of row (removed test al, 1 check)
+    ; Optimize: 160 = 128 + 32, use shifts and adds instead of mul
+    ; row * 160 = row * 128 + row * 32 = (row << 7) + (row << 5)
     mov di, ax
+    shl di, 7          ; di = row * 128
+    mov bx, ax
+    shl bx, 5           ; bx = row * 32
+    add di, bx          ; di = row * 160
+    ; Draw left lane marker (column 33)
     add di, 33 * 2
     mov word [es:di], 0x7FDB
+    ; Draw right lane marker (column 46)
     sub di, 33 * 2
     add di, 46 * 2
     mov word [es:di], 0x7FDB
@@ -1027,20 +1205,25 @@ draw_car_at:
     pusha
     push es
     push dx
+    push bx              ; Save bx (contains car color/character: 0x4CDB or 0x19DB)
     mov ax, 0xb800
     mov es, ax
     mov al, dh
     mov ah, 0
-    mov cx, 160
-    mul cx
+    ; Optimize: 160 = 128 + 32, use shifts and adds
     mov di, ax
-    pop dx
-    push dx
+    shl di, 7          ; di = row * 128
+    mov cx, ax         ; Use cx instead of bx for row calculation
+    shl cx, 5           ; cx = row * 32
+    add di, cx          ; di = row * 160
+    pop bx              ; Restore bx (car color/character) - pop before dx
+    pop dx              ; Restore dx (row, col)
+    push dx             ; Save dx again for redraw_lane_lines
     mov al, dl
     mov ah, 0
     shl ax, 1
     add di, ax
-    mov ax, bx
+    mov ax, bx          ; Use bx (car color) for drawing
     mov [es:di], ax
     add di, 2
     mov [es:di], ax
@@ -1064,9 +1247,12 @@ erase_car_at:
     mov es, ax
     mov al, dh
     mov ah, 0
-    mov cx, 160
-    mul cx
+    ; Optimize: 160 = 128 + 32, use shifts and adds
     mov di, ax
+    shl di, 7          ; di = row * 128
+    mov bx, ax
+    shl bx, 5           ; bx = row * 32
+    add di, bx          ; di = row * 160
     pop dx
     push dx
     mov al, dl
@@ -1099,21 +1285,20 @@ draw_coin_at:
     push dx              ; Save for column calculation
     mov al, dh           ; Get row
     mov ah, 0
-    mov cx, 160
-    mul cx               ; Calculate row offset
-    mov di, ax           ; di = row * 160
+    ; Optimize: 160 = 128 + 32, use shifts and adds
+    mov di, ax
+    shl di, 7          ; di = row * 128
+    mov bx, ax
+    shl bx, 5           ; bx = row * 32
+    add di, bx          ; di = row * 160
     pop dx               ; Get column value
     mov al, dl           ; Get column
     mov ah, 0
     shl ax, 1            ; Multiply by 2 (each char is 2 bytes)
     add di, ax           ; di = row_offset + (col * 2)
-    mov ax, 0x0E24       ; Yellow $ symbol
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    add di, 160 - 2
-    mov [es:di], ax
-    add di, 2
+    ; Draw small gold circle (single character, not 2x2)
+    ; Use bright yellow (0x0E) with circle/bullet character (0x07)
+    mov ax, 0x0E07       ; Bright yellow circle/bullet
     mov [es:di], ax
     pop es
     popa
@@ -1127,26 +1312,22 @@ erase_coin_at:
     mov es, ax
     mov al, dh
     mov ah, 0
-    mov cx, 160
-    mul cx
+    ; Optimize: 160 = 128 + 32, use shifts and adds
     mov di, ax
+    shl di, 7          ; di = row * 128
+    mov bx, ax
+    shl bx, 5           ; bx = row * 32
+    add di, bx          ; di = row * 160
     pop dx
     push dx
     mov al, dl
     mov ah, 0
     shl ax, 1
     add di, ax
-    mov ax, 0x7020
-    mov [es:di], ax
-    add di, 2
-    mov [es:di], ax
-    add di, 160 - 2
-    mov [es:di], ax
-    add di, 2
+    ; Erase single character (coin is now single character, not 2x2)
+    mov ax, 0x7020      ; Gray space
     mov [es:di], ax
     pop dx
-    call redraw_lane_lines
-    inc dh
     call redraw_lane_lines
     pop es
     popa
@@ -1162,9 +1343,12 @@ draw_fuel_at:
     push dx              ; Save for column calculation
     mov al, dh           ; Get row
     mov ah, 0
-    mov cx, 160
-    mul cx               ; Calculate row offset
-    mov di, ax           ; di = row * 160
+    ; Optimize: 160 = 128 + 32, use shifts and adds
+    mov di, ax
+    shl di, 7          ; di = row * 128
+    mov bx, ax
+    shl bx, 5           ; bx = row * 32
+    add di, bx          ; di = row * 160
     pop dx               ; Get column value
     mov al, dl           ; Get column
     mov ah, 0
@@ -1190,9 +1374,12 @@ erase_fuel_at:
     mov es, ax
     mov al, dh
     mov ah, 0
-    mov cx, 160
-    mul cx
+    ; Optimize: 160 = 128 + 32, use shifts and adds
     mov di, ax
+    shl di, 7          ; di = row * 128
+    mov bx, ax
+    shl bx, 5           ; bx = row * 32
+    add di, bx          ; di = row * 160
     pop dx
     push dx
     mov al, dl
@@ -1254,11 +1441,16 @@ spawn_obstacle:
     cmp al, 3
     jae .done
     call get_random_lane
+    ; Validate that dl contains a valid lane (should be 26, 38, or 50)
+    cmp dl, LANE_LEFT
+    jb .done
+    cmp dl, LANE_RIGHT
+    ja .done
     mov al, [obs_count]
     mov ah, 0
     mov si, ax
     mov byte [obs_rows + si], 1
-    mov [obs_cols + si], dl
+    mov byte [obs_cols + si], dl    ; Explicitly store as byte
     inc byte [obs_count]
 .done:
     popa
@@ -1307,19 +1499,44 @@ update_obstacles:
     mov al, [obs_rows + si]
     cmp al, 0
     je .next
+    ; Save current position before erasing
     mov dh, al
     mov dl, [obs_cols + si]
+    ; Validate column is valid (should be 26, 38, or 50)
+    cmp dl, 0
+    je .remove_invalid
+    cmp dl, LANE_LEFT
+    jb .remove_invalid
+    cmp dl, LANE_RIGHT
+    ja .remove_invalid
+    ; Erase at current position
     call erase_car_at
+    ; Move obstacle down
     inc byte [obs_rows + si]
     mov al, [obs_rows + si]
+    ; Check if obstacle has moved off screen
     cmp al, 24
     ja .remove
+    ; Draw obstacle at new position
     mov dh, al
     mov dl, [obs_cols + si]
+    ; Validate column again before drawing
+    cmp dl, 0
+    je .remove
+    cmp dl, LANE_LEFT
+    jb .remove
+    cmp dl, LANE_RIGHT
+    ja .remove
     mov bx, 0x19DB
     call draw_car_at
     jmp .next
+.remove_invalid:
+    ; Invalid obstacle - remove it
+    mov byte [obs_rows + si], 0
+    dec byte [obs_count]
+    jmp .next
 .remove:
+    ; Obstacle moved off screen - remove it
     mov byte [obs_rows + si], 0
     dec byte [obs_count]
 .next:
@@ -1338,10 +1555,48 @@ update_coins:
     mov al, [coin_rows + si]
     cmp al, 0
     je .next
-    mov dh, al
-    mov dl, [coin_cols + si]    ; Read column value (should be 26, 38, or 50)
+    mov dh, al          ; dh = coin_row
+    mov dl, [coin_cols + si]    ; dl = coin_col
     cmp dl, 0                   ; Safety check: skip if column is 0
     je .next
+    
+    ; Check if player collected this coin
+    mov al, [player_row]
+    mov bl, [player_col]
+    ; Check if columns match
+    cmp bl, dl
+    jne .not_collected
+    ; Check if rows overlap: coin is single character, player car is 2 rows tall
+    ; Coin should be at player_row OR player_row+1 to be collected
+    ; Save coin position before overwriting
+    push dx              ; Save coin position (dh=row, dl=col)
+    mov al, [player_row]
+    mov cl, dh          ; cl = coin_row
+    ; Check if coin_row equals player_row (top of car)
+    cmp cl, al
+    je .coin_collected
+    ; Check if coin_row equals player_row+1 (bottom of car)
+    mov dl, al
+    inc dl              ; dl = player_row + 1
+    cmp cl, dl
+    je .coin_collected
+    ; Coin not at player position
+    jmp .not_collected_restore
+    
+.coin_collected:
+    
+    ; Coin collected! Erase coin, increment score and remove coin
+    pop dx               ; Restore coin position (dh=row, dl=col) to erase it
+    call erase_coin_at   ; Erase the coin from screen
+    inc word [player_score]
+    mov byte [coin_rows + si], 0
+    dec byte [coin_count]
+    jmp .next
+    
+.not_collected_restore:
+    pop dx               ; Restore coin position (dh=row, dl=col)
+.not_collected:
+    ; Coin not collected - move it down
     call erase_coin_at
     inc byte [coin_rows + si]
     mov al, [coin_rows + si]
@@ -1373,10 +1628,53 @@ update_fuel:
     mov al, [fuel_rows + si]
     cmp al, 0
     je .next
-    mov dh, al
-    mov dl, [fuel_cols + si]    ; Read column value (should be 26, 38, or 50)
+    mov dh, al          ; dh = fuel_row
+    mov dl, [fuel_cols + si]    ; dl = fuel_col
     cmp dl, 0                   ; Safety check: skip if column is 0
     je .next
+    
+    ; Check if player collected this fuel
+    mov al, [player_row]
+    mov bl, [player_col]
+    ; Check if columns match
+    cmp bl, dl
+    jne .not_collected
+    ; Check if rows overlap: fuel is single character, player car is 2 rows tall
+    ; Save fuel position before overwriting
+    push dx              ; Save fuel position (dh=row, dl=col)
+    mov al, [player_row]
+    mov cl, dh          ; cl = fuel_row
+    ; Check if fuel_row equals player_row (top of car)
+    cmp cl, al
+    je .fuel_collected
+    ; Check if fuel_row equals player_row+1 (bottom of car)
+    mov dl, al
+    inc dl              ; dl = player_row + 1
+    cmp cl, dl
+    je .fuel_collected
+    ; Fuel not at player position
+    jmp .not_collected_restore
+    
+.fuel_collected:
+    ; Fuel collected! Erase fuel, refill tank and remove fuel
+    pop dx               ; Restore fuel position (dh=row, dl=col) to erase it
+    call erase_fuel_at   ; Erase the fuel from screen
+    ; Refill fuel (add 30, max 100)
+    mov al, [fuel_level]
+    add al, 30
+    cmp al, 100
+    jbe .fuel_ok
+    mov al, 100
+.fuel_ok:
+    mov [fuel_level], al
+    mov byte [fuel_rows + si], 0
+    dec byte [fuel_count]
+    jmp .next
+    
+.not_collected_restore:
+    pop dx               ; Restore fuel position (dh=row, dl=col)
+.not_collected:
+    ; Fuel not collected - move it down
     call erase_fuel_at
     inc byte [fuel_rows + si]
     mov al, [fuel_rows + si]
@@ -1399,6 +1697,71 @@ update_fuel:
     popa
     ret
 
+; Redraw all visible objects to ensure they stay on screen
+redraw_all_objects:
+    pusha
+    ; Redraw all obstacles
+    mov si, 0
+.redraw_obs_loop:
+    cmp si, 3
+    jae .redraw_coins
+    mov al, [obs_rows + si]
+    cmp al, 0
+    je .next_obs_redraw
+    mov dh, al
+    mov dl, [obs_cols + si]
+    cmp dl, 0
+    je .next_obs_redraw
+    cmp dl, LANE_LEFT
+    jb .next_obs_redraw
+    cmp dl, LANE_RIGHT
+    ja .next_obs_redraw
+    mov bx, 0x19DB
+    call draw_car_at
+.next_obs_redraw:
+    inc si
+    jmp .redraw_obs_loop
+    
+.redraw_coins:
+    ; Redraw all coins
+    mov si, 0
+.redraw_coin_loop:
+    cmp si, 3
+    jae .redraw_fuel
+    mov al, [coin_rows + si]
+    cmp al, 0
+    je .next_coin_redraw
+    mov dh, al
+    mov dl, [coin_cols + si]
+    cmp dl, 0
+    je .next_coin_redraw
+    call draw_coin_at
+.next_coin_redraw:
+    inc si
+    jmp .redraw_coin_loop
+    
+.redraw_fuel:
+    ; Redraw all fuel
+    mov si, 0
+.redraw_fuel_loop:
+    cmp si, 2
+    jae .redraw_done
+    mov al, [fuel_rows + si]
+    cmp al, 0
+    je .next_fuel_redraw
+    mov dh, al
+    mov dl, [fuel_cols + si]
+    cmp dl, 0
+    je .next_fuel_redraw
+    call draw_fuel_at
+.next_fuel_redraw:
+    inc si
+    jmp .redraw_fuel_loop
+    
+.redraw_done:
+    popa
+    ret
+
 draw_player:
     pusha
     ; Check if position changed
@@ -1409,7 +1772,8 @@ draw_player:
     cmp bl, [prev_player_col]
     jne .position_changed
     
-    ; Position hasn't changed, just redraw
+    ; Position hasn't changed - but still redraw to ensure car is visible
+    ; (in case it was erased by background updates or other operations)
     mov dh, [player_row]
     mov dl, [player_col]
     mov bx, 0x4CDB
@@ -1417,10 +1781,16 @@ draw_player:
     jmp .done
     
 .position_changed:
-    ; Erase old position first
+    ; Erase old position first (only if it's a valid position)
     mov dh, [prev_player_row]
     mov dl, [prev_player_col]
+    ; Check if previous position is valid (not 0,0 which indicates first draw)
+    cmp dh, 0
+    je .skip_erase
+    cmp dl, 0
+    je .skip_erase
     call erase_car_at
+.skip_erase:
     
     ; Draw new position
     mov dh, [player_row]
@@ -1438,56 +1808,114 @@ draw_player:
     popa
     ret
 
-check_collision:
-    pusha
-    mov al, [player_row]
-    mov bl, [player_col]
+; Check collision at a specific position (row in al, col in bl)
+; Returns: al = 1 if collision, 0 if no collision
+; Can be called from ISR, so uses cs: prefix for data access
+check_collision_at_position:
+    push bx
+    push cx
+    push dx
+    push si
     
-    ; Check collision with obstacles (both car and obstacles are 2x2)
+    ; al = row, bl = col (parameters)
     mov si, 0
 .check_obs_loop:
     cmp si, 3
-    jae .check_done
-    mov cl, [obs_rows + si]
+    jae .no_collision
+    mov cl, [cs:obs_rows + si]
     cmp cl, 0
     je .next_obs
-    mov ch, [obs_cols + si]
+    mov ch, [cs:obs_cols + si]
     
     ; Check if columns match
     cmp bl, ch
     jne .next_obs
     
-    ; Check if rows overlap (player at row, row+1; obstacle at row, row+1)
-    ; Player row matches obstacle row
-    cmp al, cl
-    je .blue_collision
-    ; Player row matches obstacle row+1
-    mov dl, cl
-    inc dl
-    cmp al, dl
-    je .blue_collision
-    ; Player row+1 matches obstacle row
-    mov dl, al
-    inc dl
-    cmp dl, cl
-    je .blue_collision
-    ; Player row+1 matches obstacle row+1
-    mov dl, al
-    inc dl
-    mov dh, cl
-    inc dh
-    cmp dl, dh
-    je .blue_collision
+    ; Check if rows overlap: |row - obs_row| <= 1
+    mov dl, al          ; dl = row
+    sub dl, cl          ; dl = row - obs_row (signed byte)
+    ; Check if difference is between -1 and 1 (inclusive)
+    cmp dl, 1
+    jg .next_obs
+    cmp dl, -1
+    jl .next_obs
+    
+    ; Collision detected
+    mov al, 1
+    jmp .done
     
 .next_obs:
     inc si
     jmp .check_obs_loop
     
-.blue_collision:
+.no_collision:
+    mov al, 0
+    
+.done:
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    ret
+
+check_collision:
+    pusha
+    mov al, [player_row]
+    mov bl, [player_col]
+    call check_collision_at_position
+    cmp al, 1
+    jne .check_done
+    
     ; Collision detected - end the game
     mov byte [game_over], 1
     
 .check_done:
+    popa
+    ret
+
+show_sparks:
+    pusha
+    push es
+    mov ax, 0xb800
+    mov es, ax
+    
+    ; Draw yellow pixels (sparks) around the player car position
+    mov al, [player_row]
+    mov bl, [player_col]
+    mov ah, 0
+    
+    ; Calculate base position: row * 160 + col * 2
+    ; Save row in dx temporarily
+    mov dx, ax          ; dx = row
+    mov di, ax
+    shl di, 7          ; di = row * 128
+    mov cx, ax
+    shl cx, 5           ; cx = row * 32
+    add di, cx          ; di = row * 160
+    ; Now calculate column offset
+    mov al, bl          ; al = col
+    mov ah, 0
+    shl ax, 1           ; ax = col * 2
+    add di, ax          ; di = base position (row * 160 + col * 2)
+    
+    ; Draw sparks in a pattern around the car (2x2 car)
+    ; Top-left spark
+    mov word [es:di-2], 0xEE2A    ; Yellow asterisk
+    ; Top-right spark
+    mov word [es:di+4], 0xEE2A
+    ; Bottom-left spark
+    mov word [es:di+158], 0xEE2A
+    ; Bottom-right spark
+    mov word [es:di+164], 0xEE2A
+    ; Additional sparks around
+    mov word [es:di-164], 0xEE2A  ; Above top-left
+    mov word [es:di-160], 0xEE2A  ; Above top-right
+    mov word [es:di+6], 0xEE2A    ; Right of top-right
+    mov word [es:di+166], 0xEE2A  ; Right of bottom-right
+    mov word [es:di+322], 0xEE2A  ; Below bottom-left
+    mov word [es:di+324], 0xEE2A  ; Below bottom-right
+    
+    pop es
     popa
     ret
 
@@ -1523,6 +1951,17 @@ main_menu:
     call reset_game_state
     call draw_background
     call draw_player
+    ; Draw score and fuel bar immediately
+    push es
+    push di
+    mov ax, 0xb800
+    mov es, ax
+    mov di, (0 * 160) + (0 * 2)    ; Top-left corner
+    call display_score
+    mov di, (1 * 160) + (0 * 2)    ; Second row, left corner
+    call display_fuel_bar
+    pop di
+    pop es
     
     push es
     mov ax, 0xb800
@@ -1552,6 +1991,18 @@ main_menu:
     
     mov byte [game_started], 1
     mov byte [game_animating], 0
+    
+    ; Draw score and fuel bar immediately on game start
+    push es
+    push di
+    mov ax, 0xb800
+    mov es, ax
+    mov di, (0 * 160) + (0 * 2)    ; Top-left corner
+    call display_score
+    mov di, (1 * 160) + (0 * 2)    ; Second row, left corner
+    call display_fuel_bar
+    pop di
+    pop es
 
 game_loop:
     ; Check if game is paused
@@ -1609,9 +2060,36 @@ game_loop:
     mov byte [in_quit_dialog], 0
     call draw_background
     call draw_player
+    ; Redraw all objects and UI
+    call redraw_all_objects
+    push es
+    push di
+    mov ax, 0xb800
+    mov es, ax
+    mov di, (0 * 160) + (0 * 2)    ; Top-left corner
+    call display_score
+    mov di, (1 * 160) + (0 * 2)    ; Second row, left corner
+    call display_fuel_bar
+    pop di
+    pop es
     jmp game_loop
     
 .check_animating:
+    ; Draw score and fuel bar even when waiting for animation start
+    push es
+    push di
+    mov ax, 0xb800
+    mov es, ax
+    mov di, (0 * 160) + (0 * 2)    ; Top-left corner
+    call display_score
+    mov di, (1 * 160) + (0 * 2)    ; Second row, left corner
+    call display_fuel_bar
+    pop di
+    pop es
+    
+    ; Redraw all objects to ensure they stay visible
+    call redraw_all_objects
+    
     ; Wait for any key to start animation
     cmp byte [game_animating], 0
     jne .running
@@ -1624,12 +2102,54 @@ game_loop:
     mov byte [game_animating], 1
     
 .running:
+    ; Check fuel level first - if fuel is 0, game over
+    cmp byte [fuel_level], 0
+    je .fuel_empty_check
+    
     ; Check for collision first - if game over, end immediately
     call check_collision
     cmp byte [game_over], 1
     je .game_over_detected
     
+    ; If animation stopped (collision during movement), show sparks and end
+    cmp byte [game_animating], 0
+    je .game_over_detected
+    
+    jmp .continue_running
+    
+.fuel_empty_check:
+    ; Fuel is empty - stop animation and end game
+    mov byte [game_animating], 0
+    mov byte [game_over], 1
+    jmp .game_over_detected
+    
+.continue_running:
+    
     inc word [frame_counter]
+    
+    ; Decrease fuel over time (every 30 frames = ~1 second)
+    inc word [fuel_timer]
+    mov ax, [fuel_timer]
+    cmp ax, 30
+    jb .check_cooldown
+    ; Reset timer and decrease fuel
+    mov word [fuel_timer], 0
+    mov al, [fuel_level]
+    cmp al, 0
+    je .fuel_empty
+    dec byte [fuel_level]
+    jmp .check_cooldown
+.fuel_empty:
+    ; Fuel is empty - stop animation
+    mov byte [game_animating], 0
+    mov byte [game_over], 1
+    jmp .game_over_detected
+    
+.check_cooldown:
+    ; Decrement lane change cooldown if active
+    cmp word [lane_change_cooldown], 0
+    je .normal_speed
+    dec word [lane_change_cooldown]
     
 .normal_speed:
 .do_updates:
@@ -1646,25 +2166,35 @@ game_loop:
     call update_fuel
     
 .skip_object_updates:
+    ; Even when updates are skipped, redraw all visible objects to ensure they stay visible
+    ; This prevents objects from disappearing when updates are skipped
+    call redraw_all_objects
+    
+.skip_spawns:
     ; Spawn new objects based on frame counter
+    ; Optimize: reuse frame_counter in ax, only reload when needed
     mov ax, [frame_counter]
+    
+    ; Spawn obstacles
     xor dx, dx
     mov bx, [spawn_interval]
     div bx
     cmp dx, 0
-    jne .skip_spawn_obs
+    jne .check_coin
     call spawn_obstacle
-.skip_spawn_obs:
     
+.check_coin:
+    ; Spawn coins
     mov ax, [frame_counter]
     xor dx, dx
     mov bx, 50
     div bx
     cmp dx, 0
-    jne .skip_spawn_coin
+    jne .check_fuel
     call spawn_coin
-.skip_spawn_coin:
     
+.check_fuel:
+    ; Spawn fuel
     mov ax, [frame_counter]
     xor dx, dx
     mov bx, 60
@@ -1676,12 +2206,38 @@ game_loop:
     
 .skip_updates:
     call draw_player
+    ; Redraw all objects to ensure they stay visible (prevents stuck objects)
+    call redraw_all_objects
+    
+    ; Display score on screen (top-left corner)
+    push es
+    push di
+    mov ax, 0xb800
+    mov es, ax
+    mov di, (0 * 160) + (0 * 2)    ; Top-left corner
+    call display_score
+    pop di
+    pop es
+    
+    ; Display fuel bar on screen (below score)
+    push es
+    push di
+    mov ax, 0xb800
+    mov es, ax
+    mov di, (1 * 160) + (0 * 2)    ; Second row, left corner
+    call display_fuel_bar
+    pop di
+    pop es
     
     call delay
     jmp game_loop
     
 .game_over_detected:
-    ; Collision detected - end the game
+    ; Collision detected - show sparks and end the game
+    call show_sparks
+    ; Wait a bit to show the sparks
+    call delay
+    call delay
     mov byte [game_started], 0
     mov byte [game_animating], 0
     jmp end_screen
